@@ -175,11 +175,15 @@ if submit and address:
     # Persist to local file
     save_persisted_properties(st.session_state.properties)
 
-# Handle Gemini import workflow: parse, show confirmation form, then add & persist
+# --- FIXED: Gemini import flow using session_state so form survives reruns ---
+# When Parse is clicked, store parsed payload in session_state
 if import_clicked and gemini_text and gemini_text.strip():
-    parsed = parse_gemini_text(gemini_text)
+    st.session_state['gemini_parsed'] = parse_gemini_text(gemini_text)
+
+# If we have a parsed payload stored, render the confirmation form
+parsed = st.session_state.get('gemini_parsed')
+if parsed:
     st.sidebar.markdown("**Parsed result — edit values and confirm import**")
-    # Provide an inline form to confirm / edit parsed values
     with st.sidebar.form("gemini_confirm_form", clear_on_submit=False):
         addr2 = st.text_input("Address", parsed.get("Address", ""))
         units2 = st.number_input("Units", min_value=1, max_value=100, value=int(parsed.get("Units", 1)))
@@ -195,7 +199,7 @@ if import_clicked and gemini_text and gemini_text.strip():
         negatives2 = st.text_area("Negatives", parsed.get("Negatives", ""))
         confirm_import = st.form_submit_button("Confirm Import to Pipeline")
 
-    if 'confirm_import' in locals() and confirm_import and addr2:
+    if confirm_import and addr2:
         new_prop = {
             "Address": addr2, "Units": units2, "Price": price2, "Rent": rent2, "Status": status2,
             "Positives": positives2, "Negatives": negatives2
@@ -208,6 +212,8 @@ if import_clicked and gemini_text and gemini_text.strip():
             st.sidebar.success("Imported and saved to pipeline.json")
         else:
             st.sidebar.warning("Imported to session, but failed to save pipeline.json")
+        # clear parsed state so the form goes away on next rerun
+        del st.session_state['gemini_parsed']
 
 
 # 2. FINANCIAL CALCULATION ENGINE
