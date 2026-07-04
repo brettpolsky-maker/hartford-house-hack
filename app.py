@@ -139,21 +139,28 @@ def fmt_pct(x):
         return "-"
 
 
-def maps_link(address: str) -> str:
-    """Return a Google Maps search URL encoded for the address."""
+def make_slug(address: str) -> str:
+    """Create a simple slug from the address for best-effort Zillow permalink attempts."""
     if not address:
         return ""
-    q = urllib.parse.quote_plus(address)
-    return f"https://www.google.com/maps/search/?api=1&query={q}"
+    s = address.lower()
+    # remove characters that are not alphanumeric or spaces
+    s = re.sub(r"[^a-z0-9\s]", "", s)
+    s = re.sub(r"\s+", "-", s).strip("-")
+    return s
 
 
-def zillow_link(address: str) -> str:
-    """Return a Zillow search URL for the address. Uses URL encoding for reliability."""
+def zillow_permalink(address: str) -> str:
+    """Best-effort Zillow permalink:
+    - Try a homedetails-style slug which sometimes maps to a property page.
+    - Fall back to the search endpoint if needed.
+    Note: without Zillow's property ID this is heuristic and may not always land on the exact property page.
+    """
     if not address:
         return ""
-    q = urllib.parse.quote_plus(address)
-    # Zillow supports search-by-address via the homes endpoint
-    return f"https://www.zillow.com/homes/{q}_rb/"
+    slug = make_slug(address)
+    # Attempt homedetails style
+    return f"https://www.zillow.com/homedetails/{slug}_rb/"
 
 
 def redfin_link(address: str) -> str:
@@ -166,7 +173,6 @@ def redfin_link(address: str) -> str:
 def realtor_link(address: str) -> str:
     if not address:
         return ""
-    # Realtor uses a path-like search; use query fallback
     q = urllib.parse.quote_plus(address)
     return f"https://www.realtor.com/realestateandhomes-search/{q}"
 
@@ -354,10 +360,8 @@ st.subheader("📊 Master Pipeline Overview")
 display_cols = ["Address", "Units", "Price", "Rent", "Status", "Est. Mortgage", "Monthly NOI", "Annual NOI", "Cap Rate", "Net Cash Flow", "Annual Cash Flow", "Cash on Cash", "Favorite"]
 display_df = df[display_cols].copy()
 
-# Add a maps link column
-display_df['Maps Link'] = display_df['Address'].apply(lambda a: maps_link(a))
 # Add other marketplace links
-display_df['Zillow'] = display_df['Address'].apply(lambda a: zillow_link(a))
+display_df['Zillow'] = display_df['Address'].apply(lambda a: zillow_permalink(a))
 display_df['Redfin'] = display_df['Address'].apply(lambda a: redfin_link(a))
 display_df['Realtor'] = display_df['Address'].apply(lambda a: realtor_link(a))
 
@@ -384,17 +388,23 @@ display_df['Favorite'] = display_df['Favorite'].apply(lambda v: '⭐' if v else 
 
 st.dataframe(display_df, use_container_width=True)
 
-# Quick links area (clickable)
+# Quick links area (icons table)
 st.markdown("---")
 st.subheader("🔗 Quick Property Links")
 if not display_df.empty:
+    # Build a small HTML table with icons to allow clickable links inside the app
+    rows = []
     for idx, row in display_df.iterrows():
         addr = row['Address']
         z = row['Zillow']
-        m = row['Maps Link']
         r = row['Redfin']
         re_l = row['Realtor']
-        st.markdown(f"**{addr}**: [Maps]({m}) | [Zillow]({z}) | [Redfin]({r}) | [Realtor]({re_l})")
+        z_icon = f"<a href=\"{z}\" target=\"_blank\">🏠 Zillow</a>"
+        r_icon = f"<a href=\"{r}\" target=\"_blank\">🔎 Redfin</a>"
+        re_icon = f"<a href=\"{re_l}\" target=\"_blank\">📋 Realtor</a>"
+        rows.append(f"<tr><td><b>{addr}</b></td><td>{z_icon}</td><td>{r_icon}</td><td>{re_icon}</td></tr>")
+    table_html = "<table>" + "".join(rows) + "</table>"
+    st.markdown(table_html, unsafe_allow_html=True)
 
 # 4b. Compare listings
 st.markdown("---")
@@ -464,12 +474,10 @@ if selected_address:
 
     st.markdown("---")
 
-    # Links
-    maps_url = maps_link(selected_address)
-    zillow_url = zillow_link(selected_address)
+    # Links (Zillow preferred permalink + Redfin/Realtor search)
+    zillow_url = zillow_permalink(selected_address)
     redfin_url = redfin_link(selected_address)
     realtor_url = realtor_link(selected_address)
-    st.markdown(f"[Open in Google Maps]({maps_url})")
     st.markdown(f"[Open on Zillow]({zillow_url})")
     st.markdown(f"[Open on Redfin]({redfin_url})")
     st.markdown(f"[Open on Realtor.com]({realtor_url})")
