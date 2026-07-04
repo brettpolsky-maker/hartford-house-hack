@@ -3,6 +3,9 @@ import pandas as pd
 import json
 import re
 import urllib.parse
+import requests
+import base64
+import os
 from pathlib import Path
 
 # Path for optional local persistence
@@ -115,13 +118,54 @@ def load_persisted_properties():
     return []
 
 
-def save_persisted_properties(props):
+# GitHub commit helper
+def commit_pipeline_to_github(token: str, owner: str, repo: str, path: str = "pipeline.json", message: str = "Update pipeline.json from app") -> bool:
+    """Create or update pipeline.json in the given GitHub repo using the provided PAT."""
+    try:
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+        api_base = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+        # Read local file
+        content = DATA_FILE.read_bytes()
+        b64 = base64.b64encode(content).decode()
+
+        # Check if file exists to get sha
+        r = requests.get(api_base, headers=headers, timeout=5)
+        if r.status_code == 200:
+            sha = r.json().get('sha')
+            payload = {"message": message, "content": b64, "sha": sha}
+            put = requests.put(api_base, headers=headers, json=payload, timeout=10)
+            return put.status_code in (200, 201)
+        elif r.status_code == 404:
+            payload = {"message": message, "content": b64}
+            put = requests.put(api_base, headers=headers, json=payload, timeout=10)
+            return put.status_code in (200, 201)
+        else:
+            return False
+    except Exception:
+        return False
+
+
+def save_persisted_properties(props, auto_commit=False, gh_owner=None, gh_repo=None):
     try:
         with DATA_FILE.open("w", encoding="utf-8") as f:
             json.dump(props, f, indent=2)
-        return True
     except Exception:
         return False
+
+    # Optionally commit to GitHub if token available and user enabled
+    if auto_commit:
+        token = None
+        # Prefer Streamlit secrets, fallback to environment variable
+        try:
+            token = st.secrets.get("GITHUB_PAT")
+        except Exception:
+            token = None
+        if not token:
+            token = os.environ.get("GITHUB_PAT")
+        if token and gh_owner and gh_repo:
+            success = commit_pipeline_to_github(token, gh_owner, gh_repo)
+            return success
+    return True
 
 
 # ---------- Small helpers ----------
@@ -150,17 +194,33 @@ def make_slug(address: str) -> str:
     return s
 
 
-def zillow_permalink(address: str) -> str:
-    """Best-effort Zillow permalink:
-    - Try a homedetails-style slug which sometimes maps to a property page.
-    - Fall back to the search endpoint if needed.
-    Note: without Zillow's property ID this is heuristic and may not always land on the exact property page.
+# Cache decorator helper (st.cache_data if available)
+try:
+    cache = st.cache_data
+except Exception:
+    cache = st.cache
+
+
+@cache
+def zillow_resolve(address: str) -> str:
+    """Try to resolve an address to a Zillow homedetails permalink; fall back to a Zillow search URL.
+    We perform a best-effort HTTP request to detect if the homedetails slug redirects to a real page. This is heuristic.
     """
     if not address:
         return ""
     slug = make_slug(address)
-    # Attempt homedetails style
-    return f"https://www.zillow.com/homedetails/{slug}_rb/"
+    homedetails = f"https://www.zillow.com/homedetails/{slug}_rb/"
+    search = f"https://www.zillow.com/homes/{urllib.parse.quote_plus(address)}_rb/"
+
+    try:
+        r = requests.get(homedetails, allow_redirects=True, timeout=5)
+        final = r.url
+        if r.status_code == 200 and "homedetails" in final:
+            return final
+        else:
+            return search
+    except Exception:
+        return search
 
 
 def redfin_link(address: str) -> str:
@@ -183,6 +243,15 @@ interest_rate = st.sidebar.slider("Interest Rate (%)", 5.0, 8.5, 6.5, 0.1) / 100
 down_payment_pct = st.sidebar.slider("Down Payment (%)", 3.5, 20.0, 5.0, 0.5) / 100
 op_expense_pct = st.sidebar.slider("Operating Expenses (% of Rent)", 35, 55, 45, 5) / 100
 
+# GitHub auto-commit controls in sidebar
+st.sidebar.markdown("---")
+st.sidebar.header("🔒 Persistence & GitHub")
+auto_commit = st.sidebar.checkbox("Auto-commit pipeline.json to GitHub on changes", value=False)
+gh_owner = st.sidebar.text_input("GitHub owner (org/user)", value="brettpolsky-maker") if auto_commit else None
+gh_repo = st.sidebar.text_input("GitHub repo", value="hartford-house-hack") if auto_commit else None
+if auto_commit:
+    st.sidebar.caption("Store a GitHub Personal Access Token named GITHUB_PAT in Streamlit secrets or as an env var for commits to work.")
+
 st.sidebar.markdown("---")
 st.sidebar.header("➕ Add / Update Property")
 with st.sidebar.form("property_form", clear_on_submit=True):
@@ -204,7 +273,6 @@ import_clicked = st.sidebar.button("Parse & Prepare Import")
 # Management tools: delete & compare
 st.sidebar.markdown("---")
 st.sidebar.header("🛠️ Manage Listings")
-# We'll populate the multiselect choices later once we have addresses
 
 # Initialize Session State Data if it doesn't exist
 if 'properties' not in st.session_state:
@@ -236,8 +304,8 @@ if submit and address:
     # Overwrite if address matches, else append
     st.session_state.properties = [p for p in st.session_state.properties if p["Address"] != address]
     st.session_state.properties.append(new_prop)
-    # Persist to local file
-    save_persisted_properties(st.session_state.properties)
+    # Persist to local file (and optionally commit)
+    save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
 
 # --- GEMINI import flow using session_state so form survives reruns ---
 # When Parse is clicked, store parsed payload in session_state
@@ -271,11 +339,11 @@ if parsed:
         # Overwrite if address matches, else append
         st.session_state.properties = [p for p in st.session_state.properties if p["Address"] != addr2]
         st.session_state.properties.append(new_prop)
-        saved = save_persisted_properties(st.session_state.properties)
+        saved = save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
         if saved:
             st.sidebar.success("Imported and saved to pipeline.json")
         else:
-            st.sidebar.warning("Imported to session, but failed to save pipeline.json")
+            st.sidebar.warning("Imported to session, but failed to save pipeline.json or commit to GitHub")
         # clear parsed state so the form goes away on next rerun
         del st.session_state['gemini_parsed']
 
@@ -361,7 +429,7 @@ display_cols = ["Address", "Units", "Price", "Rent", "Status", "Est. Mortgage", 
 display_df = df[display_cols].copy()
 
 # Add other marketplace links
-display_df['Zillow'] = display_df['Address'].apply(lambda a: zillow_permalink(a))
+display_df['Zillow'] = display_df['Address'].apply(lambda a: zillow_resolve(a))
 display_df['Redfin'] = display_df['Address'].apply(lambda a: redfin_link(a))
 display_df['Realtor'] = display_df['Address'].apply(lambda a: realtor_link(a))
 
@@ -386,6 +454,7 @@ if 'Cash on Cash' in display_df.columns:
 # Favorite column as star
 display_df['Favorite'] = display_df['Favorite'].apply(lambda v: '⭐' if v else '')
 
+# Show the numeric table
 st.dataframe(display_df, use_container_width=True)
 
 # Quick links area (icons table)
@@ -406,6 +475,14 @@ if not display_df.empty:
     table_html = "<table>" + "".join(rows) + "</table>"
     st.markdown(table_html, unsafe_allow_html=True)
 
+    # Quick copy utility: select an address and copy into a text box for easy manual clipboard copy
+    st.markdown("**Quick Copy Address**")
+    copy_choice = st.selectbox("Choose address to copy", display_df['Address'].tolist())
+    if st.button("Copy address to field"):
+        st.session_state['copied_address'] = copy_choice
+    copied = st.session_state.get('copied_address', '')
+    st.text_input("Address (copy from here)", value=copied, key="copy_field")
+
 # 4b. Compare listings
 st.markdown("---")
 st.subheader("⚖️ Compare Listings")
@@ -423,14 +500,14 @@ selected_for_delete = st.multiselect("Select listings to delete", addresses)
 if st.button("Delete selected listings", key="delete_selected"):
     if selected_for_delete:
         st.session_state.properties = [p for p in st.session_state.properties if p['Address'] not in selected_for_delete]
-        save_persisted_properties(st.session_state.properties)
+        save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
         st.success(f"Deleted {len(selected_for_delete)} listings")
     else:
         st.info("No listings selected to delete")
 
 if st.button("Clear all listings", key="clear_all_confirm"):
     st.session_state.properties = []
-    save_persisted_properties(st.session_state.properties)
+    save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
     st.success("Cleared all listings")
 
 st.markdown("---")
@@ -475,7 +552,7 @@ if selected_address:
     st.markdown("---")
 
     # Links (Zillow preferred permalink + Redfin/Realtor search)
-    zillow_url = zillow_permalink(selected_address)
+    zillow_url = zillow_resolve(selected_address)
     redfin_url = redfin_link(selected_address)
     realtor_url = realtor_link(selected_address)
     st.markdown(f"[Open on Zillow]({zillow_url})")
@@ -487,7 +564,7 @@ if selected_address:
     with action_col1:
         if st.button("🗑️ Delete this listing"):
             st.session_state.properties = [p for p in st.session_state.properties if p['Address'] != selected_address]
-            save_persisted_properties(st.session_state.properties)
+            save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
             st.experimental_rerun()
     with action_col2:
         # Toggle favorite state
@@ -497,7 +574,7 @@ if selected_address:
             for p in st.session_state.properties:
                 if p['Address'] == selected_address:
                     p['Favorite'] = not p.get('Favorite', False)
-            save_persisted_properties(st.session_state.properties)
+            save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
             st.experimental_rerun()
     with action_col3:
         if st.button("🔁 Refresh Metrics"):
@@ -506,4 +583,4 @@ if selected_address:
 st.markdown("---")
 
 # Footer: fun tips
-st.markdown("Need more power? I can also add automatic GitHub commits on import so your pipeline is persistent across deploys.")
+st.markdown("Need more power? I can also add extra analytics, filters, or automatic ranking by Cap Rate or Cash-on-Cash.")
