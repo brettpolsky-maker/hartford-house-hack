@@ -10,8 +10,10 @@ DATA_FILE = Path(__file__).parent / "pipeline.json"
 # Set up page config for a premium, wide-screen dashboard look
 st.set_page_config(page_title="Hartford House-Hacking Command Center", layout="wide", initial_sidebar_state="expanded")
 
-st.title("🚀 Hartford House-Hacking Command Center")
+# Fun superhero header
+st.title("🚀 Hartford House-Hacking Command Center — Guardians' Edition")
 st.markdown("---")
+st.markdown("#### 🛡️ 🧙‍♂️ 💪 💀 👊  — mix of power, mystic, and grit to help you house-hack like a hero")
 
 # ---------- Helper: Gemini text parser ----------
 def parse_gemini_text(text: str) -> dict:
@@ -145,6 +147,13 @@ st.sidebar.header("🔁 Import from Gemini")
 gemini_text = st.sidebar.text_area("Paste Gemini output here")
 import_clicked = st.sidebar.button("Parse & Prepare Import")
 
+# Management tools: delete & compare
+st.sidebar.markdown("---")
+st.sidebar.header("🛠️ Manage Listings")
+# We'll populate the multiselect choices later once we have addresses
+manage_delete = st.sidebar.button("Delete Selected Listings")
+clear_all = st.sidebar.button("Clear All Listings")
+
 # Initialize Session State Data if it doesn't exist
 if 'properties' not in st.session_state:
     # Start from the built-in defaults, then merge persisted ones
@@ -175,7 +184,7 @@ if submit and address:
     # Persist to local file
     save_persisted_properties(st.session_state.properties)
 
-# --- FIXED: Gemini import flow using session_state so form survives reruns ---
+# --- GEMINI import flow using session_state so form survives reruns ---
 # When Parse is clicked, store parsed payload in session_state
 if import_clicked and gemini_text and gemini_text.strip():
     st.session_state['gemini_parsed'] = parse_gemini_text(gemini_text)
@@ -214,7 +223,6 @@ if parsed:
             st.sidebar.warning("Imported to session, but failed to save pipeline.json")
         # clear parsed state so the form goes away on next rerun
         del st.session_state['gemini_parsed']
-
 
 # 2. FINANCIAL CALCULATION ENGINE
 processed_deals = []
@@ -263,10 +271,10 @@ df = pd.DataFrame(processed_deals)
 
 # 3. EXECUTIVE METRICS BAR
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Pre-Approval Cap", "$725,000", "Expires Sept 2026")
-col2.metric("Total Deals Tracked", len(df))
+col1.metric("🛡️ Pre-Approval Cap", "$725,000", "Expires Sept 2026")
+col2.metric("🚀 Total Deals Tracked", len(df))
 under_review = len(df[df['Status'] == 'Underwriting']) if not df.empty else 0
-col3.metric("Deals in Underwriting", under_review)
+col3.metric("🧙‍♂️ Deals in Underwriting", under_review)
 
 # Safely determine best deal
 best_deal = "None"
@@ -275,13 +283,20 @@ if not df.empty and "Net Cash Flow" in df.columns:
         best_idx = df["Net Cash Flow"].idxmax()
         if pd.notna(best_idx):
             best_deal = df.loc[best_idx, "Address"]
-col4.metric("Top Cash-Flowing Option", best_deal)
+col4.metric("💪 Top Cash-Flowing Option", best_deal)
 
 st.markdown("---")
 
 # 4. MASTER DEAL PIPELINE TABLE
 st.subheader("📊 Master Pipeline Overview")
 display_df = df[["Address", "Units", "Price", "Rent", "Status", "Est. Mortgage", "Monthly NOI", "Net Cash Flow"]].copy()
+
+# Keep a numeric copy for comparisons
+compare_df = display_df.copy()
+for c in ["Price", "Rent", "Est. Mortgage", "Monthly NOI", "Net Cash Flow"]:
+    # Ensure numeric columns exist in compare_df
+    if c in compare_df.columns:
+        compare_df[c] = compare_df[c].replace('[\$,]', '', regex=True).astype(float)
 
 # Format numeric columns for display
 currency_cols = ["Price", "Rent", "Est. Mortgage", "Monthly NOI", "Net Cash Flow"]
@@ -291,15 +306,41 @@ for c in currency_cols:
 
 st.dataframe(display_df, use_container_width=True)
 
+# 4b. Compare listings
+st.markdown("---")
+st.subheader("⚖️ Compare Listings")
+addresses = df['Address'].tolist() if not df.empty else []
+selected_for_compare = st.multiselect("Select listings to compare (max 4)", addresses, max_selections=4)
+if selected_for_compare:
+    to_compare = compare_df[compare_df['Address'].isin(selected_for_compare)].set_index('Address')
+    # Show side-by-side numeric comparison
+    st.write(to_compare[['Units','Price','Rent','Est. Mortgage','Monthly NOI','Net Cash Flow']].transpose())
+
+# 4c. Delete / manage listings
+st.markdown("---")
+st.subheader("🗑️ Manage & Delete Listings")
+selected_for_delete = st.multiselect("Select listings to delete", addresses)
+if st.button("Delete selected listings", key="delete_selected"):
+    if selected_for_delete:
+        st.session_state.properties = [p for p in st.session_state.properties if p['Address'] not in selected_for_delete]
+        save_persisted_properties(st.session_state.properties)
+        st.success(f"Deleted {len(selected_for_delete)} listings")
+    else:
+        st.info("No listings selected to delete")
+
+if st.button("Clear all listings", key="clear_all_confirm"):
+    st.session_state.properties = []
+    save_persisted_properties(st.session_state.properties)
+    st.success("Cleared all listings")
+
 st.markdown("---")
 
-# 5. DYNAMIC PROPERTY CARD DEEP-DIVES
+# 5. DYNAMIC PROPERTY CARD DEEP-DIVES + per-item delete
 st.subheader("🔎 Deep-Dive Property Vetting")
-addresses = df["Address"].unique().tolist() if not df.empty else []
 selected_address = st.selectbox("Select a property to view detailed pros/cons:", addresses)
 
 if selected_address:
-    deal = df[df["Address"] == selected_address].iloc[0]
+    deal = df[df['Address'] == selected_address].iloc[0]
 
     card_col1, card_col2 = st.columns(2)
     with card_col1:
@@ -313,3 +354,19 @@ if selected_address:
         for neg in str(deal.get("Negatives", "")).split(","):
             if neg.strip():
                 st.markdown(f"* **{neg.strip()}**")
+
+    # quick actions for this deal
+    action_col1, action_col2 = st.columns(2)
+    with action_col1:
+        if st.button("🗑️ Delete this listing"):
+            st.session_state.properties = [p for p in st.session_state.properties if p['Address'] != selected_address]
+            save_persisted_properties(st.session_state.properties)
+            st.experimental_rerun()
+    with action_col2:
+        if st.button("⭐ Mark as Favorite"):
+            st.success("Marked as favorite — cosmic energy engaged!")
+
+st.markdown("---")
+
+# Footer: fun tips
+st.markdown("Need more power? Add cap-rate, annualized returns, or set the owner-occupied unit count. I can also add GitHub commits on import so your pipeline is persistent across deploys.")
