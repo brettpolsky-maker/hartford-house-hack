@@ -123,6 +123,28 @@ def save_persisted_properties(props):
         return False
 
 
+# ---------- Small helpers ----------
+def fmt_currency(x):
+    try:
+        return f"${x:,.0f}"
+    except Exception:
+        return "-"
+
+
+def fmt_pct(x):
+    try:
+        return f"{x*100:.2f}%"
+    except Exception:
+        return "-"
+
+
+def maps_link(address: str) -> str:
+    if not address:
+        return ""
+    q = address.replace(' ', '+')
+    return f"https://www.google.com/maps/search/{q}"
+
+
 # 1. SIDEBAR: Global Financial Variables & Deal Input
 st.sidebar.header("⚙️ Global Deal Mechanics")
 interest_rate = st.sidebar.slider("Interest Rate (%)", 5.0, 8.5, 6.5, 0.1) / 100
@@ -151,18 +173,16 @@ import_clicked = st.sidebar.button("Parse & Prepare Import")
 st.sidebar.markdown("---")
 st.sidebar.header("🛠️ Manage Listings")
 # We'll populate the multiselect choices later once we have addresses
-manage_delete = st.sidebar.button("Delete Selected Listings")
-clear_all = st.sidebar.button("Clear All Listings")
 
 # Initialize Session State Data if it doesn't exist
 if 'properties' not in st.session_state:
     # Start from the built-in defaults, then merge persisted ones
     st.session_state.properties = [
-        {"Address": "6-Family Hartford", "Units": 6, "Price": 830000, "Rent": 7200, "Status": "Underwriting", "Positives": "Max scale with 5 income streams, Commercial financing eligibility, High cash flow cushion", "Negatives": "Exceeds $725k pre-approval, High management intensity, Maintenance volatility"},
-        {"Address": "40 Allen Place", "Units": 3, "Price": 420000, "Rent": 4500, "Status": "Underwriting", "Positives": "Turnkey condition requires low cap-ex, Leaves budget breathing room, Better lifestyle balance/privacy", "Negatives": "Lower absolute cash-flow ceiling, 33% vacancy risk, Highly competitive market"},
-        {"Address": "19-21 Mill St", "Units": 2, "Price": 340000, "Rent": 3100, "Status": "Screened", "Positives": "Separate utilities/mechanicals, Lowest purchase price and risk, Light management load", "Negatives": "Only subsidies mortgage, Zero immediate scale, 50% vacancy risk exposure"},
-        {"Address": "285 Zion St", "Units": 4, "Price": 490000, "Rent": 5200, "Status": "Monitoring", "Positives": "Good unit mix, Emerging location", "Negatives": "Awaiting rent roll verification"},
-        {"Address": "98-100 Capen St", "Units": 3, "Price": 380000, "Rent": 3900, "Status": "Monitoring", "Positives": "Low entry price, Strong initial cap rate", "Negatives": "Drive by required to assess block"}
+        {"Address": "6-Family Hartford", "Units": 6, "Price": 830000, "Rent": 7200, "Status": "Underwriting", "Positives": "Max scale with 5 income streams, Commercial financing eligibility, High cash flow cushion", "Negatives": "Exceeds $725k pre-approval, High management intensity, Maintenance volatility", "Favorite": False},
+        {"Address": "40 Allen Place", "Units": 3, "Price": 420000, "Rent": 4500, "Status": "Underwriting", "Positives": "Turnkey condition requires low cap-ex, Leaves budget breathing room, Better lifestyle balance/privacy", "Negatives": "Lower absolute cash-flow ceiling, 33% vacancy risk, Highly competitive market", "Favorite": False},
+        {"Address": "19-21 Mill St", "Units": 2, "Price": 340000, "Rent": 3100, "Status": "Screened", "Positives": "Separate utilities/mechanicals, Lowest purchase price and risk, Light management load", "Negatives": "Only subsidies mortgage, Zero immediate scale, 50% vacancy risk exposure", "Favorite": False},
+        {"Address": "285 Zion St", "Units": 4, "Price": 490000, "Rent": 5200, "Status": "Monitoring", "Positives": "Good unit mix, Emerging location", "Negatives": "Awaiting rent roll verification", "Favorite": False},
+        {"Address": "98-100 Capen St", "Units": 3, "Price": 380000, "Rent": 3900, "Status": "Monitoring", "Positives": "Low entry price, Strong initial cap rate", "Negatives": "Drive by required to assess block", "Favorite": False}
     ]
     # Merge persisted properties (avoid duplicates by Address)
     persisted = load_persisted_properties()
@@ -170,13 +190,16 @@ if 'properties' not in st.session_state:
         existing_addresses = {p['Address'] for p in st.session_state.properties}
         for pp in persisted:
             if pp.get('Address') and pp['Address'] not in existing_addresses:
+                # ensure Favorite defaults to False if missing
+                if 'Favorite' not in pp:
+                    pp['Favorite'] = False
                 st.session_state.properties.append(pp)
 
 # Append new property entry if form submitted
 if submit and address:
     new_prop = {
         "Address": address, "Units": units, "Price": price, "Rent": rent, "Status": status,
-        "Positives": positives, "Negatives": negatives
+        "Positives": positives, "Negatives": negatives, "Favorite": False
     }
     # Overwrite if address matches, else append
     st.session_state.properties = [p for p in st.session_state.properties if p["Address"] != address]
@@ -211,7 +234,7 @@ if parsed:
     if confirm_import and addr2:
         new_prop = {
             "Address": addr2, "Units": units2, "Price": price2, "Rent": rent2, "Status": status2,
-            "Positives": positives2, "Negatives": negatives2
+            "Positives": positives2, "Negatives": negatives2, "Favorite": False
         }
         # Overwrite if address matches, else append
         st.session_state.properties = [p for p in st.session_state.properties if p["Address"] != addr2]
@@ -258,11 +281,23 @@ for p in st.session_state.properties:
 
     house_hack_cash_flow = remaining_rent - op_expenses_on_remaining - mortgage
 
+    # Additional metrics
+    annual_noi = monthly_noi * 12
+    cap_rate = (annual_noi / price) if price > 0 else 0
+    annual_cash_flow = house_hack_cash_flow * 12
+    down_payment_amount = price * down_payment_pct if price > 0 else 0
+    cash_on_cash = (annual_cash_flow / down_payment_amount) if down_payment_amount > 0 else None
+
     processed_deals.append({
         **p,
         "Est. Mortgage": round(mortgage, 2),
         "Monthly NOI": round(monthly_noi, 2),
-        "Net Cash Flow": round(house_hack_cash_flow, 2)
+        "Annual NOI": round(annual_noi, 2),
+        "Cap Rate": round(cap_rate, 4),
+        "Net Cash Flow": round(house_hack_cash_flow, 2),
+        "Annual Cash Flow": round(annual_cash_flow, 2),
+        "Cash on Cash": round(cash_on_cash, 4) if cash_on_cash is not None else None,
+        "Favorite": p.get('Favorite', False)
     })
 
 
@@ -289,20 +324,33 @@ st.markdown("---")
 
 # 4. MASTER DEAL PIPELINE TABLE
 st.subheader("📊 Master Pipeline Overview")
-display_df = df[["Address", "Units", "Price", "Rent", "Status", "Est. Mortgage", "Monthly NOI", "Net Cash Flow"]].copy()
+# Add columns for display including favorites, annuals and cap/coc
+display_cols = ["Address", "Units", "Price", "Rent", "Status", "Est. Mortgage", "Monthly NOI", "Annual NOI", "Cap Rate", "Net Cash Flow", "Annual Cash Flow", "Cash on Cash", "Favorite"]
+display_df = df[display_cols].copy()
+
+# Add a maps link column
+display_df['Maps Link'] = display_df['Address'].apply(lambda a: maps_link(a))
 
 # Keep a numeric copy for comparisons
 compare_df = display_df.copy()
-for c in ["Price", "Rent", "Est. Mortgage", "Monthly NOI", "Net Cash Flow"]:
-    # Ensure numeric columns exist in compare_df
+# Convert display numeric strings to floats for compare_df where needed
+for c in ["Price", "Rent", "Est. Mortgage", "Monthly NOI", "Annual NOI", "Net Cash Flow", "Annual Cash Flow", "Cash on Cash"]:
     if c in compare_df.columns:
-        compare_df[c] = compare_df[c].replace('[\$,]', '', regex=True).astype(float)
+        compare_df[c] = compare_df[c].astype(float)
 
 # Format numeric columns for display
-currency_cols = ["Price", "Rent", "Est. Mortgage", "Monthly NOI", "Net Cash Flow"]
-for c in currency_cols:
+for c in ["Price", "Rent", "Est. Mortgage", "Monthly NOI", "Annual NOI", "Net Cash Flow", "Annual Cash Flow"]:
     if c in display_df.columns:
-        display_df[c] = display_df[c].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "-")
+        display_df[c] = display_df[c].apply(lambda x: fmt_currency(x) if pd.notna(x) else "-")
+
+# Format Cap Rate and Cash on Cash
+if 'Cap Rate' in display_df.columns:
+    display_df['Cap Rate'] = display_df['Cap Rate'].apply(lambda x: f"{x*100:.2f}%" if pd.notna(x) else "-")
+if 'Cash on Cash' in display_df.columns:
+    display_df['Cash on Cash'] = display_df['Cash on Cash'].apply(lambda x: f"{x*100:.2f}%" if pd.notna(x) else "-")
+
+# Favorite column as star
+display_df['Favorite'] = display_df['Favorite'].apply(lambda v: '⭐' if v else '')
 
 st.dataframe(display_df, use_container_width=True)
 
@@ -314,7 +362,7 @@ selected_for_compare = st.multiselect("Select listings to compare (max 4)", addr
 if selected_for_compare:
     to_compare = compare_df[compare_df['Address'].isin(selected_for_compare)].set_index('Address')
     # Show side-by-side numeric comparison
-    st.write(to_compare[['Units','Price','Rent','Est. Mortgage','Monthly NOI','Net Cash Flow']].transpose())
+    st.write(to_compare[['Units','Price','Rent','Est. Mortgage','Monthly NOI','Annual NOI','Cap Rate','Net Cash Flow','Annual Cash Flow','Cash on Cash']].transpose())
 
 # 4c. Delete / manage listings
 st.markdown("---")
@@ -342,6 +390,23 @@ selected_address = st.selectbox("Select a property to view detailed pros/cons:",
 if selected_address:
     deal = df[df['Address'] == selected_address].iloc[0]
 
+    # Show hero banner depending on favorite
+    if deal.get('Favorite'):
+        st.markdown(f"### {deal['Address']} ⭐ — Favorite Listing")
+    else:
+        st.markdown(f"### {deal['Address']}")
+
+    # Metrics
+    metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+    metrics_col1.metric("Price", fmt_currency(deal['Price']))
+    metrics_col1.metric("Units", int(deal['Units']))
+    metrics_col2.metric("Monthly NOI", fmt_currency(deal['Monthly NOI']))
+    metrics_col2.metric("Annual NOI", fmt_currency(deal['Annual NOI']))
+    metrics_col3.metric("Cap Rate", f"{deal['Cap Rate']*100:.2f}%" if pd.notna(deal['Cap Rate']) else "-")
+    metrics_col3.metric("Annual Cash Flow", fmt_currency(deal['Annual Cash Flow']))
+
+    st.markdown("---")
+
     card_col1, card_col2 = st.columns(2)
     with card_col1:
         st.success("### 👍 Top Positives / Upsides")
@@ -355,18 +420,35 @@ if selected_address:
             if neg.strip():
                 st.markdown(f"* **{neg.strip()}**")
 
+    st.markdown("---")
+
+    # Links
+    maps_url = maps_link(selected_address)
+    st.markdown(f"[Open in Google Maps]({maps_url})")
+    st.markdown(f"[Search on Zillow](https://www.zillow.com/homes/{selected_address.replace(' ', '-')})")
+
     # quick actions for this deal
-    action_col1, action_col2 = st.columns(2)
+    action_col1, action_col2, action_col3 = st.columns(3)
     with action_col1:
         if st.button("🗑️ Delete this listing"):
             st.session_state.properties = [p for p in st.session_state.properties if p['Address'] != selected_address]
             save_persisted_properties(st.session_state.properties)
             st.experimental_rerun()
     with action_col2:
-        if st.button("⭐ Mark as Favorite"):
-            st.success("Marked as favorite — cosmic energy engaged!")
+        # Toggle favorite state
+        cur_fav = bool(deal.get('Favorite'))
+        if st.button("⭐ Toggle Favorite"):
+            # update underlying session state
+            for p in st.session_state.properties:
+                if p['Address'] == selected_address:
+                    p['Favorite'] = not p.get('Favorite', False)
+            save_persisted_properties(st.session_state.properties)
+            st.experimental_rerun()
+    with action_col3:
+        if st.button("🔁 Refresh Metrics"):
+            st.experimental_rerun()
 
 st.markdown("---")
 
 # Footer: fun tips
-st.markdown("Need more power? Add cap-rate, annualized returns, or set the owner-occupied unit count. I can also add GitHub commits on import so your pipeline is persistent across deploys.")
+st.markdown("Need more power? I can also add automatic GitHub commits on import so your pipeline is persistent across deploys.")
