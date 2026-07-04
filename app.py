@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import re
+import urllib.parse
 from pathlib import Path
 
 # Path for optional local persistence
@@ -139,10 +140,35 @@ def fmt_pct(x):
 
 
 def maps_link(address: str) -> str:
+    """Return a Google Maps search URL encoded for the address."""
     if not address:
         return ""
-    q = address.replace(' ', '+')
-    return f"https://www.google.com/maps/search/{q}"
+    q = urllib.parse.quote_plus(address)
+    return f"https://www.google.com/maps/search/?api=1&query={q}"
+
+
+def zillow_link(address: str) -> str:
+    """Return a Zillow search URL for the address. Uses URL encoding for reliability."""
+    if not address:
+        return ""
+    q = urllib.parse.quote_plus(address)
+    # Zillow supports search-by-address via the homes endpoint
+    return f"https://www.zillow.com/homes/{q}_rb/"
+
+
+def redfin_link(address: str) -> str:
+    if not address:
+        return ""
+    q = urllib.parse.quote_plus(address)
+    return f"https://www.redfin.com/search?q={q}"
+
+
+def realtor_link(address: str) -> str:
+    if not address:
+        return ""
+    # Realtor uses a path-like search; use query fallback
+    q = urllib.parse.quote_plus(address)
+    return f"https://www.realtor.com/realestateandhomes-search/{q}"
 
 
 # 1. SIDEBAR: Global Financial Variables & Deal Input
@@ -330,6 +356,10 @@ display_df = df[display_cols].copy()
 
 # Add a maps link column
 display_df['Maps Link'] = display_df['Address'].apply(lambda a: maps_link(a))
+# Add other marketplace links
+display_df['Zillow'] = display_df['Address'].apply(lambda a: zillow_link(a))
+display_df['Redfin'] = display_df['Address'].apply(lambda a: redfin_link(a))
+display_df['Realtor'] = display_df['Address'].apply(lambda a: realtor_link(a))
 
 # Keep a numeric copy for comparisons
 compare_df = display_df.copy()
@@ -353,6 +383,18 @@ if 'Cash on Cash' in display_df.columns:
 display_df['Favorite'] = display_df['Favorite'].apply(lambda v: '⭐' if v else '')
 
 st.dataframe(display_df, use_container_width=True)
+
+# Quick links area (clickable)
+st.markdown("---")
+st.subheader("🔗 Quick Property Links")
+if not display_df.empty:
+    for idx, row in display_df.iterrows():
+        addr = row['Address']
+        z = row['Zillow']
+        m = row['Maps Link']
+        r = row['Redfin']
+        re_l = row['Realtor']
+        st.markdown(f"**{addr}**: [Maps]({m}) | [Zillow]({z}) | [Redfin]({r}) | [Realtor]({re_l})")
 
 # 4b. Compare listings
 st.markdown("---")
@@ -424,8 +466,13 @@ if selected_address:
 
     # Links
     maps_url = maps_link(selected_address)
+    zillow_url = zillow_link(selected_address)
+    redfin_url = redfin_link(selected_address)
+    realtor_url = realtor_link(selected_address)
     st.markdown(f"[Open in Google Maps]({maps_url})")
-    st.markdown(f"[Search on Zillow](https://www.zillow.com/homes/{selected_address.replace(' ', '-')})")
+    st.markdown(f"[Open on Zillow]({zillow_url})")
+    st.markdown(f"[Open on Redfin]({redfin_url})")
+    st.markdown(f"[Open on Realtor.com]({realtor_url})")
 
     # quick actions for this deal
     action_col1, action_col2, action_col3 = st.columns(3)
