@@ -1,11 +1,125 @@
 import streamlit as st
 import pandas as pd
+import json
+import re
+from pathlib import Path
+
+# Path for optional local persistence
+DATA_FILE = Path(__file__).parent / "pipeline.json"
 
 # Set up page config for a premium, wide-screen dashboard look
 st.set_page_config(page_title="Hartford House-Hacking Command Center", layout="wide", initial_sidebar_state="expanded")
 
 st.title("🚀 Hartford House-Hacking Command Center")
 st.markdown("---")
+
+# ---------- Helper: Gemini text parser ----------
+def parse_gemini_text(text: str) -> dict:
+    """Best-effort parsing for pasted Gemini content.
+    Looks for lines like `Address: ...`, `Units: 3`, `Price: $400,000`, `Rent: $4,500`,
+    `Status: Underwriting`, `Positives: ...`, `Negatives: ...`.
+    Falls back to heuristics when explicit labels aren't present.
+    """
+    out = {"Address": "", "Units": 1, "Price": 0.0, "Rent": 0.0, "Status": "Monitoring", "Positives": "", "Negatives": ""}
+    if not text:
+        return out
+
+    # Normalize newlines and trim
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    joined = "\n".join(lines)
+
+    # Label-based extraction
+    def find_label(label):
+        m = re.search(rf"{label}\s*[:\-]\s*(.+?)(?:\n|$)", joined, re.IGNORECASE)
+        return m.group(1).strip() if m else None
+
+    address = find_label("Address") or find_label("Property")
+    units = find_label("Units")
+    price = find_label("Price")
+    rent = find_label("Rent") or find_label("Est\. Gross Monthly Rent")
+    status = find_label("Status")
+    positives = find_label("Positives")
+    negatives = find_label("Negatives")
+
+    # Try dollar-based finds if labeled values not found
+    if not price:
+        m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)", joined)
+        if m:
+            price = m.group(1)
+    if not rent:
+        # look for a second dollar amount or patterns like 'monthly rent' nearby
+        dollars = re.findall(r"\$\s*([\d,]+(?:\.\d+)?)", joined)
+        if len(dollars) >= 2:
+            rent = dollars[1]
+        elif dollars:
+            # single dollar found: decide if it's rent or price based on context
+            context_idx = joined.lower().find(dollars[0])
+            prev = joined[max(0, context_idx-50):context_idx].lower()
+            if "rent" in prev or "monthly" in prev:
+                rent = dollars[0]
+            else:
+                price = dollars[0]
+
+    # Numeric cleanup helpers
+    def to_float(s):
+        if s is None:
+            return 0.0
+        s = str(s).replace('$','').replace(',','').strip()
+        try:
+            return float(s)
+        except Exception:
+            return 0.0
+
+    # Assign parsed values
+    if address:
+        out["Address"] = address
+    if units:
+        try:
+            out["Units"] = int(re.search(r"(\d+)", units).group(1))
+        except Exception:
+            out["Units"] = 1
+    if price:
+        out["Price"] = to_float(price)
+    if rent:
+        out["Rent"] = to_float(rent)
+    if status:
+        out["Status"] = status
+    if positives:
+        out["Positives"] = positives
+    if negatives:
+        out["Negatives"] = negatives
+
+    # Heuristic: if a line looks like an address (contains numbers and a street name), pick the first such line
+    if not out["Address"]:
+        for l in lines:
+            if re.search(r"\d+\s+\w+", l):
+                out["Address"] = l
+                break
+
+    return out
+
+
+# ---------- Persistence helpers ----------
+def load_persisted_properties():
+    if DATA_FILE.exists():
+        try:
+            with DATA_FILE.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception:
+            pass
+    return []
+
+
+def save_persisted_properties(props):
+    try:
+        with DATA_FILE.open("w", encoding="utf-8") as f:
+            json.dump(props, f, indent=2)
+        return True
+    except Exception:
+        return False
+
 
 # 1. SIDEBAR: Global Financial Variables & Deal Input
 st.sidebar.header("⚙️ Global Deal Mechanics")
@@ -25,8 +139,15 @@ with st.sidebar.form("property_form", clear_on_submit=True):
     negatives = st.text_area("Negatives (comma separated)")
     submit = st.form_submit_button("Sync to Pipeline")
 
+# Import from Gemini (Option A)
+st.sidebar.markdown("---")
+st.sidebar.header("🔁 Import from Gemini")
+gemini_text = st.sidebar.text_area("Paste Gemini output here")
+import_clicked = st.sidebar.button("Parse & Prepare Import")
+
 # Initialize Session State Data if it doesn't exist
 if 'properties' not in st.session_state:
+    # Start from the built-in defaults, then merge persisted ones
     st.session_state.properties = [
         {"Address": "6-Family Hartford", "Units": 6, "Price": 830000, "Rent": 7200, "Status": "Underwriting", "Positives": "Max scale with 5 income streams, Commercial financing eligibility, High cash flow cushion", "Negatives": "Exceeds $725k pre-approval, High management intensity, Maintenance volatility"},
         {"Address": "40 Allen Place", "Units": 3, "Price": 420000, "Rent": 4500, "Status": "Underwriting", "Positives": "Turnkey condition requires low cap-ex, Leaves budget breathing room, Better lifestyle balance/privacy", "Negatives": "Lower absolute cash-flow ceiling, 33% vacancy risk, Highly competitive market"},
@@ -34,6 +155,13 @@ if 'properties' not in st.session_state:
         {"Address": "285 Zion St", "Units": 4, "Price": 490000, "Rent": 5200, "Status": "Monitoring", "Positives": "Good unit mix, Emerging location", "Negatives": "Awaiting rent roll verification"},
         {"Address": "98-100 Capen St", "Units": 3, "Price": 380000, "Rent": 3900, "Status": "Monitoring", "Positives": "Low entry price, Strong initial cap rate", "Negatives": "Drive by required to assess block"}
     ]
+    # Merge persisted properties (avoid duplicates by Address)
+    persisted = load_persisted_properties()
+    if persisted:
+        existing_addresses = {p['Address'] for p in st.session_state.properties}
+        for pp in persisted:
+            if pp.get('Address') and pp['Address'] not in existing_addresses:
+                st.session_state.properties.append(pp)
 
 # Append new property entry if form submitted
 if submit and address:
@@ -44,6 +172,43 @@ if submit and address:
     # Overwrite if address matches, else append
     st.session_state.properties = [p for p in st.session_state.properties if p["Address"] != address]
     st.session_state.properties.append(new_prop)
+    # Persist to local file
+    save_persisted_properties(st.session_state.properties)
+
+# Handle Gemini import workflow: parse, show confirmation form, then add & persist
+if import_clicked and gemini_text and gemini_text.strip():
+    parsed = parse_gemini_text(gemini_text)
+    st.sidebar.markdown("**Parsed result — edit values and confirm import**")
+    # Provide an inline form to confirm / edit parsed values
+    with st.sidebar.form("gemini_confirm_form", clear_on_submit=False):
+        addr2 = st.text_input("Address", parsed.get("Address", ""))
+        units2 = st.number_input("Units", min_value=1, max_value=100, value=int(parsed.get("Units", 1)))
+        price2 = st.number_input("Price ($)", min_value=0.0, value=float(parsed.get("Price", 0.0)))
+        rent2 = st.number_input("Rent ($)", min_value=0.0, value=float(parsed.get("Rent", 0.0)))
+        status_options = ["Monitoring", "Screened", "Underwriting", "Offer Made", "Dead Deal"]
+        try:
+            status_index = status_options.index(parsed.get("Status", "Monitoring"))
+        except ValueError:
+            status_index = 0
+        status2 = st.selectbox("Status", status_options, index=status_index)
+        positives2 = st.text_area("Positives", parsed.get("Positives", ""))
+        negatives2 = st.text_area("Negatives", parsed.get("Negatives", ""))
+        confirm_import = st.form_submit_button("Confirm Import to Pipeline")
+
+    if 'confirm_import' in locals() and confirm_import and addr2:
+        new_prop = {
+            "Address": addr2, "Units": units2, "Price": price2, "Rent": rent2, "Status": status2,
+            "Positives": positives2, "Negatives": negatives2
+        }
+        # Overwrite if address matches, else append
+        st.session_state.properties = [p for p in st.session_state.properties if p["Address"] != addr2]
+        st.session_state.properties.append(new_prop)
+        saved = save_persisted_properties(st.session_state.properties)
+        if saved:
+            st.sidebar.success("Imported and saved to pipeline.json")
+        else:
+            st.sidebar.warning("Imported to session, but failed to save pipeline.json")
+
 
 # 2. FINANCIAL CALCULATION ENGINE
 processed_deals = []
@@ -66,14 +231,10 @@ for p in st.session_state.properties:
         mortgage = 0.0
 
     # Operating expenses and NOI
-    # total operating expenses (monthly) based on total gross rent
     total_operating_expenses = rent_total * op_expense_pct
     monthly_noi = rent_total - total_operating_expenses
 
-    # House-hack logic:
-    # - user_rent_share: owner's occupied unit monthly rent (assuming one unit)
-    # - remaining_rent: rent collected from other units
-    # Allocate operating expenses proportionally to remaining_rent (so owner's occupied unit's share is excluded)
+    # House-hack logic (owner occupies one unit)
     user_rent_share = rent_total / units if units > 0 else 0
     remaining_rent = rent_total - user_rent_share
 
@@ -81,7 +242,6 @@ for p in st.session_state.properties:
     if rent_total > 0:
         op_expenses_on_remaining = total_operating_expenses * (remaining_rent / rent_total)
 
-    # Net cash flow from the other units after their share of op expenses and the mortgage payment
     house_hack_cash_flow = remaining_rent - op_expenses_on_remaining - mortgage
 
     processed_deals.append({
@@ -91,6 +251,8 @@ for p in st.session_state.properties:
         "Net Cash Flow": round(house_hack_cash_flow, 2)
     })
 
+
+# Build dataframe
 df = pd.DataFrame(processed_deals)
 
 # 3. EXECUTIVE METRICS BAR
