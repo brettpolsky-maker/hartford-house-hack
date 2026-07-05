@@ -21,86 +21,213 @@ st.markdown("#### 🛡️ 🧙‍♂️ 💪 💀 👊  — mix of power, mystic
 
 # ---------- Helper: Gemini text parser ----------
 def parse_gemini_text(text: str) -> dict:
-    """Best-effort parsing for pasted Gemini content.
-    Looks for lines like `Address: ...`, `Units: 3`, `Price: $400,000`, `Rent: $4,500`,
-    `Status: Underwriting`, `Positives: ...`, `Negatives: ...`.
-    Falls back to heuristics when explicit labels aren't present.
+    """Robust parsing for pasted Gemini content.
+    Supports:
+      - Labelled lines (Address:, Price:, Rent:, Units:, Status:, Positives:, Negatives:)
+      - JSON-like payloads embedded in text
+      - HTML/Markdown stripping
+      - Shorthand numeric formats (400k, 4.5k, 4k/mo)
+      - Numbers without $ when context words like rent/month/price appear
+      - Heuristics when labels are absent (pick largest dollar-like value as price, smaller as rent)
+    Returns a dict with keys: Address, Units, Price, Rent, Status, Positives, Negatives
     """
     out = {"Address": "", "Units": 1, "Price": 0.0, "Rent": 0.0, "Status": "Monitoring", "Positives": "", "Negatives": ""}
     if not text:
         return out
 
-    # Normalize newlines and trim
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    raw = text.strip()
+
+    # Try to extract JSON object if present (some Gemini payloads can include JSON)
+    try:
+        json_candidate = re.search(r"\{[\s\S]*\}", raw)
+        if json_candidate:
+            try:
+                parsed_json = json.loads(json_candidate.group(0))
+                # map common keys if present
+                if isinstance(parsed_json, dict):
+                    if parsed_json.get("address"):
+                        out["Address"] = parsed_json.get("address")
+                    if parsed_json.get("units"):
+                        out["Units"] = int(parsed_json.get("units"))
+                    if parsed_json.get("price"):
+                        out["Price"] = float(parsed_json.get("price"))
+                    if parsed_json.get("rent"):
+                        out["Rent"] = float(parsed_json.get("rent"))
+                    out["Status"] = parsed_json.get("status", out["Status"])
+                    out["Positives"] = parsed_json.get("positives", out["Positives"])
+                    out["Negatives"] = parsed_json.get("negatives", out["Negatives"])
+                    return out
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Strip simple HTML tags if pasted
+    cleaned = re.sub(r"<[^>]+>", "", raw)
+
+    # Normalize whitespace and split into lines
+    lines = [l.strip() for l in re.split(r"\r?\n|\u2022|\u2023|\u25E6|\u2043", cleaned) if l.strip()]
     joined = "\n".join(lines)
 
-    # Label-based extraction
-    def find_label(label):
-        m = re.search(rf"{label}\s*[:\-]\s*(.+?)(?:\n|$)", joined, re.IGNORECASE)
-        return m.group(1).strip() if m else None
-
-    address = find_label("Address") or find_label("Property")
-    units = find_label("Units")
-    price = find_label("Price")
-    rent = find_label("Rent") or find_label("Est\. Gross Monthly Rent")
-    status = find_label("Status")
-    positives = find_label("Positives")
-    negatives = find_label("Negatives")
-
-    # Try dollar-based finds if labeled values not found
-    if not price:
-        m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)", joined)
-        if m:
-            price = m.group(1)
-    if not rent:
-        # look for a second dollar amount or patterns like 'monthly rent' nearby
-        dollars = re.findall(r"\$\s*([\d,]+(?:\.\d+)?)", joined)
-        if len(dollars) >= 2:
-            rent = dollars[1]
-        elif dollars:
-            # single dollar found: decide if it's rent or price based on context
-            context_idx = joined.lower().find(dollars[0])
-            prev = joined[max(0, context_idx-50):context_idx].lower()
-            if "rent" in prev or "monthly" in prev:
-                rent = dollars[0]
-            else:
-                price = dollars[0]
-
-    # Numeric cleanup helpers
-    def to_float(s):
-        if s is None:
+    # helper: parse numeric tokens like 400k, $4,500, 4.5k/mo
+    def parse_number_token(token: str) -> float:
+        if token is None:
             return 0.0
-        s = str(s).replace('$','').replace(',','').strip()
+        s = str(token).lower()
+        s = s.replace(',', '').replace('usd', '')
+        # remove '/mo', 'per month', 'monthly'
+        s = re.sub(r"(/mo|/month|per month|monthly|/m|mo)", "", s)
+        s = s.strip()
+        # remove $ and other currency
+        s = re.sub(r"[^0-9\.km]", "", s)
+        if s == '':
+            return 0.0
+        # handle k/m shorthand
+        m = re.match(r"([0-9]*\.?[0-9]+)k$", s)
+        if m:
+            return float(m.group(1)) * 1000
+        m = re.match(r"([0-9]*\.?[0-9]+)m$", s)
+        if m:
+            return float(m.group(1)) * 1000000
         try:
             return float(s)
         except Exception:
             return 0.0
 
-    # Assign parsed values
-    if address:
-        out["Address"] = address
+    # helper: find labelled fields with flexible separators
+    def find_label_variants(text_block, keys):
+        for key in keys:
+            # allow 'Key: value', 'Key - value', 'Key — value'
+            m = re.search(rf"{re.escape(key)}\s*[:\-—–]\s*(.+?)(?:\n|$)", text_block, re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+        return None
+
+    # Label-based extraction with multiple synonyms
+    address = find_label_variants(joined, ["Address", "Property", "Location"])
+    units = find_label_variants(joined, ["Units", "Unit Count", "# Units", "Beds", "Bedrooms"]) or find_label_variants(joined, ["Family"],)
+    price = find_label_variants(joined, ["Price", "Purchase Price", "Asking Price", "List Price"]) or find_label_variants(joined, ["Price \($\)", "Price $"]) 
+    rent = find_label_variants(joined, ["Rent", "Est. Gross Monthly Rent", "Monthly Rent", "Rent/mo", "Rent (monthly)"])
+    status = find_label_variants(joined, ["Status", "Pipeline Status", "Stage"]) 
+    positives = find_label_variants(joined, ["Positives", "Pros", "Upsides", "Strengths"]) 
+    negatives = find_label_variants(joined, ["Negatives", "Cons", "Risks", "Issues"]) 
+
+    # If price/rent not found by labels, look for $ or k/m tokens
+    dollar_tokens = re.findall(r"\$?\s*([0-9,]+(?:\.[0-9]+)?\s*[kKmM]?)\b", joined)
+    numeric_tokens = re.findall(r"\b([0-9]+(?:\.[0-9]+)?\s*[kKmM]?)\b", joined)
+
+    # Context-aware search: find tokens near the words 'rent' or 'price'
+    def find_nearby_token(word):
+        m = re.search(rf"([\$0-9,\.\skmKM]+)\s*(?:{word})", joined, re.IGNORECASE)
+        if m:
+            toks = re.findall(r"\$?\s*([0-9,]+(?:\.[0-9]+)?\s*[kKmM]?)\b", m.group(1))
+            if toks:
+                return toks[-1]
+        # try reverse: word followed by token
+        m = re.search(rf"(?:{word})\s*[:\-—–]?\s*\$?\s*([0-9,]+(?:\.[0-9]+)?\s*[kKmM]?)", joined, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        return None
+
+    if not price:
+        p_tok = find_nearby_token('price') or find_nearby_token('asking') or None
+        if p_tok:
+            price = p_tok
+    if not rent:
+        r_tok = find_nearby_token('rent') or find_nearby_token('monthly') or find_nearby_token('mo')
+        if r_tok:
+            rent = r_tok
+
+    # If still missing, use heuristics: take all dollar-like tokens and assign largest to price, next to rent
+    all_amounts = []
+    for tok in dollar_tokens:
+        all_amounts.append(parse_number_token(tok))
+    # also include numeric tokens that might be unlabeled
+    for tok in numeric_tokens:
+        val = parse_number_token(tok)
+        if val not in all_amounts:
+            all_amounts.append(val)
+
+    all_amounts = [v for v in all_amounts if v > 0]
+
+    # If price not set but we have amounts, assume largest is price
+    if not price and all_amounts:
+        price = str(int(max(all_amounts)))
+    # If rent not set and we have at least two amounts, assume smallest is rent
+    if not rent and len(all_amounts) >= 2:
+        rent_val = sorted(all_amounts)[0]
+        rent = str(int(rent_val))
+
+    # Units heuristics: look for patterns like '6-unit', '6 family', 'Units: 6', '6 units'
+    if not units:
+        m = re.search(r"(\d+)\s*(?:-?unit|units|family|br|beds?)\b", joined, re.IGNORECASE)
+        if m:
+            units = m.group(1)
+
+    # Address heuristics: look for typical street patterns
+    if not address:
+        for l in lines:
+            # skip lines that are clearly numeric-only or short tags
+            if len(l) < 4:
+                continue
+            # street pattern
+            if re.search(r"\d{1,5}\s+[A-Za-z0-9\s\.]+\b(St|Street|Ave|Avenue|Rd|Road|Blvd|Lane|Ln|Dr|Drive|Ct|Court|Place|Pl|Terrace|Terr)\b", l, re.IGNORECASE):
+                address = l
+                break
+        # fallback: first non-empty line that's not a label-only
+        if not address and lines:
+            # pick first line that isn't just a single keyword like 'Pros' or 'Cons'
+            for l in lines:
+                if ':' in l:
+                    # avoid pure label lines
+                    continue
+                if len(l.split()) >= 2:
+                    address = l
+                    break
+
+    # Units numeric conversion
     if units:
         try:
-            out["Units"] = int(re.search(r"(\d+)", units).group(1))
+            # common '6-family' or '6 family'
+            m = re.search(r"(\d+)", str(units))
+            if m:
+                out["Units"] = int(m.group(1))
         except Exception:
             out["Units"] = 1
+
+    # Price / Rent numeric conversion
     if price:
-        out["Price"] = to_float(price)
+        out["Price"] = parse_number_token(price)
     if rent:
-        out["Rent"] = to_float(rent)
+        out["Rent"] = parse_number_token(rent)
+
+    # Status detection from free text if not labelled
+    if not status:
+        status_match = re.search(r"\b(Monitoring|Screened|Underwriting|Offer Made|Dead Deal)\b", joined, re.IGNORECASE)
+        if status_match:
+            status = status_match.group(1)
     if status:
-        out["Status"] = status
+        out["Status"] = status.strip()
+
+    # Positives / Negatives: if labelled use, else try to capture bullet lines after 'Pros'/'Cons'
     if positives:
         out["Positives"] = positives
+    else:
+        # look for a block starting with Pros/Positives or '+' lines
+        m = re.search(r"(?:Positives|Pros|Upsides)\s*[:\-]?\s*([\s\S]*?)(?:\n\n|\Z)", joined, re.IGNORECASE)
+        if m:
+            out["Positives"] = m.group(1).strip()
+
     if negatives:
         out["Negatives"] = negatives
+    else:
+        m = re.search(r"(?:Negatives|Cons|Risks|Issues)\s*[:\-]?\s*([\s\S]*?)(?:\n\n|\Z)", joined, re.IGNORECASE)
+        if m:
+            out["Negatives"] = m.group(1).strip()
 
-    # Heuristic: if a line looks like an address (contains numbers and a street name), pick the first such line
-    if not out["Address"]:
-        for l in lines:
-            if re.search(r"\d+\s+\w+", l):
-                out["Address"] = l
-                break
+    # Final address assignment
+    if address:
+        out["Address"] = address
 
     return out
 
@@ -278,11 +405,11 @@ st.sidebar.header("🛠️ Manage Listings")
 if 'properties' not in st.session_state:
     # Start from the built-in defaults, then merge persisted ones
     st.session_state.properties = [
-        {"Address": "6-Family Hartford", "Units": 6, "Price": 830000, "Rent": 7200, "Status": "Underwriting", "Positives": "Max scale with 5 income streams, Commercial financing eligibility, High cash flow cushion", "Negatives": "Exceeds $725k pre-approval, High management intensity, Maintenance volatility", "Favorite": False},
-        {"Address": "40 Allen Place", "Units": 3, "Price": 420000, "Rent": 4500, "Status": "Underwriting", "Positives": "Turnkey condition requires low cap-ex, Leaves budget breathing room, Better lifestyle balance/privacy", "Negatives": "Lower absolute cash-flow ceiling, 33% vacancy risk, Highly competitive market", "Favorite": False},
-        {"Address": "19-21 Mill St", "Units": 2, "Price": 340000, "Rent": 3100, "Status": "Screened", "Positives": "Separate utilities/mechanicals, Lowest purchase price and risk, Light management load", "Negatives": "Only subsidies mortgage, Zero immediate scale, 50% vacancy risk exposure", "Favorite": False},
-        {"Address": "285 Zion St", "Units": 4, "Price": 490000, "Rent": 5200, "Status": "Monitoring", "Positives": "Good unit mix, Emerging location", "Negatives": "Awaiting rent roll verification", "Favorite": False},
-        {"Address": "98-100 Capen St", "Units": 3, "Price": 380000, "Rent": 3900, "Status": "Monitoring", "Positives": "Low entry price, Strong initial cap rate", "Negatives": "Drive by required to assess block", "Favorite": False}
+        {"Address": "6-Family Hartford", "Units": 6, "Price": 830000, "Rent": 7200, "Status": "Underwriting", "Positives": "Max scale with 5 income streams, Commercial financing eligibility, High[...]"},
+        {"Address": "40 Allen Place", "Units": 3, "Price": 420000, "Rent": 4500, "Status": "Underwriting", "Positives": "Turnkey condition requires low cap-ex, Leaves budget breathing room, Bette[...]"},
+        {"Address": "19-21 Mill St", "Units": 2, "Price": 340000, "Rent": 3100, "Status": "Screened", "Positives": "Separate utilities/mechanicals, Lowest purchase price and risk, Light managemen[...]"},
+        {"Address": "285 Zion St", "Units": 4, "Price": 490000, "Rent": 5200, "Status": "Monitoring", "Positives": "Good unit mix, Emerging location", "Negatives": "Awaiting rent roll verificatio[...]"},
+        {"Address": "98-100 Capen St", "Units": 3, "Price": 380000, "Rent": 3900, "Status": "Monitoring", "Positives": "Low entry price, Strong initial cap rate", "Negatives": "Drive by required [...]"},
     ]
     # Merge persisted properties (avoid duplicates by Address)
     persisted = load_persisted_properties()
