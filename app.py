@@ -21,92 +21,64 @@ st.markdown("#### 🛡️ 🧙‍♂️ 💪 💀 👊  — mix of power, mystic
 
 # ---------- Helper: Gemini text parser ----------
 def parse_gemini_text(text: str) -> dict:
-    """Best-effort parsing for pasted Gemini content.
-    Handles various formats including Gemini's typical output with labels, colons, dashes, etc.
-    Looks for lines like `Address: ...`, `Units: 3`, `Price: $400,000`, `Rent: $4,500`,
-    `Status: Underwriting`, `Positives: ...`, `Negatives: ...`.
-    Falls back to heuristics when explicit labels aren't present.
+    """Simple parsing for pasted Gemini content.
+    Looks for: Address: ..., Units: 3, Price: $400,000, Rent: $4,500, etc.
     """
     out = {"Address": "", "Units": 1, "Price": 0.0, "Rent": 0.0, "Status": "Monitoring", "Positives": "", "Negatives": ""}
     if not text:
         return out
 
-    # Normalize newlines and trim
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    joined = "\n".join(lines)
-
-    # Label-based extraction - more flexible pattern that handles multiline
-    def find_label(label):
-        # Match patterns like "Address: ...", "Address — ...", "Address ...", etc.
-        # Use DOTALL to match across newlines for multiline values
-        m = re.search(rf"^{label}\s*[:\-–—]?\s*(.+?)(?:\n[A-Z]|\Z)", joined, re.IGNORECASE | re.MULTILINE)
-        if m:
-            value = m.group(1).strip()
-            # Clean up any trailing labels or extra text
-            value = re.sub(r'\n.*', '', value, flags=re.DOTALL).strip()
-            return value if value else None
-        return None
-
-    address = find_label("Address") or find_label("Property") or find_label("Location")
-    units = find_label("Units") or find_label("Unit")
-    price = find_label("Price") or find_label("Purchase") or find_label("List")
-    rent = find_label("Rent") or find_label("Est.*Rent") or find_label("Monthly.*Income")
-    status = find_label("Status") or find_label("Pipeline")
-    positives = find_label("Positives") or find_label("Pros") or find_label("Strengths")
-    negatives = find_label("Negatives") or find_label("Cons") or find_label("Risks")
-
-    # Try dollar-based finds if labeled values not found
-    if not price:
-        m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)", joined)
-        if m:
-            price = m.group(1)
-    if not rent:
-        dollars = re.findall(r"\$\s*([\d,]+(?:\.\d+)?)", joined)
-        if len(dollars) >= 2:
-            rent = dollars[1]
-        elif dollars:
-            context_idx = joined.lower().find(dollars[0])
-            prev = joined[max(0, context_idx-100):context_idx].lower()
-            if "rent" in prev or "monthly" in prev or "income" in prev:
-                rent = dollars[0]
-            else:
-                price = dollars[0]
-
-    # Numeric cleanup helpers
-    def to_float(s):
-        if s is None:
-            return 0.0
-        s = str(s).replace('$','').replace(',','').strip()
-        try:
-            return float(s)
-        except Exception:
-            return 0.0
-
-    # Assign parsed values
-    if address:
-        out["Address"] = address
-    if units:
-        try:
-            out["Units"] = int(re.search(r"(\d+)", units).group(1))
-        except Exception:
-            out["Units"] = 1
-    if price:
-        out["Price"] = to_float(price)
-    if rent:
-        out["Rent"] = to_float(rent)
-    if status:
-        out["Status"] = status
-    if positives:
-        out["Positives"] = positives
-    if negatives:
-        out["Negatives"] = negatives
-
-    # Heuristic: if a line looks like an address (contains numbers and a street name), pick the first such line
-    if not out["Address"]:
-        for l in lines:
-            if re.search(r"\d+\s+\w+", l):
-                out["Address"] = l
-                break
+    lines = text.split('\n')
+    
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        
+        # Simple direct extraction: look for label: value
+        if 'address' in line_lower and ':' in line:
+            parts = line.split(':', 1)
+            if len(parts) > 1:
+                out["Address"] = parts[1].strip()
+        
+        elif 'units' in line_lower and ':' in line:
+            parts = line.split(':', 1)
+            if len(parts) > 1:
+                try:
+                    out["Units"] = int(''.join(filter(str.isdigit, parts[1])))
+                except:
+                    out["Units"] = 1
+        
+        elif 'price' in line_lower and ':' in line:
+            parts = line.split(':', 1)
+            if len(parts) > 1:
+                price_str = parts[1].replace('$', '').replace(',', '').strip()
+                try:
+                    out["Price"] = float(price_str)
+                except:
+                    pass
+        
+        elif 'rent' in line_lower and ':' in line:
+            parts = line.split(':', 1)
+            if len(parts) > 1:
+                rent_str = parts[1].replace('$', '').replace(',', '').strip()
+                try:
+                    out["Rent"] = float(rent_str)
+                except:
+                    pass
+        
+        elif 'status' in line_lower and ':' in line:
+            parts = line.split(':', 1)
+            if len(parts) > 1:
+                out["Status"] = parts[1].strip()
+        
+        elif 'positives' in line_lower and ':' in line:
+            parts = line.split(':', 1)
+            if len(parts) > 1:
+                out["Positives"] = parts[1].strip()
+        
+        elif 'negatives' in line_lower and ':' in line:
+            parts = line.split(':', 1)
+            if len(parts) > 1:
+                out["Negatives"] = parts[1].strip()
 
     return out
 
@@ -319,7 +291,10 @@ if import_clicked and gemini_text and gemini_text.strip():
     parsed_data = parse_gemini_text(gemini_text)
     st.session_state['gemini_parsed'] = parsed_data
     # Debug: Show what was parsed
-    st.sidebar.info(f"Parsed: {parsed_data['Address']}")
+    if parsed_data.get("Address"):
+        st.sidebar.success(f"✓ Parsed: {parsed_data['Address']}")
+    else:
+        st.sidebar.warning("⚠ No address found. Check format.")
 
 # If we have a parsed payload stored, render the confirmation form
 parsed = st.session_state.get('gemini_parsed')
