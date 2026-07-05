@@ -284,8 +284,30 @@ with st.sidebar.form("property_form", clear_on_submit=True):
 # Import from Gemini (Option A)
 st.sidebar.markdown("---")
 st.sidebar.header("🔁 Import from Gemini")
-gemini_text = st.sidebar.text_area("Paste Gemini output here")
+gemini_text = st.sidebar.text_area("Paste Gemini output here", height=150)
 import_clicked = st.sidebar.button("Parse & Prepare Import")
+
+# DEBUG PANEL - Always visible for troubleshooting
+st.sidebar.markdown("---")
+st.sidebar.header("🐛 Parser Debug Panel")
+show_debug = st.sidebar.checkbox("Show parsed data (for debugging)")
+
+if show_debug and gemini_text and gemini_text.strip():
+    parsed_data = parse_gemini_text(gemini_text)
+    st.sidebar.markdown("**Raw parsed output:**")
+    st.sidebar.json(parsed_data)
+    
+    # Show individual fields for easy inspection
+    with st.sidebar.expander("Field Details"):
+        st.write(f"**Address:** {parsed_data['Address']}")
+        st.write(f"**Units:** {parsed_data['Units']}")
+        st.write(f"**Price:** ${parsed_data['Price']:,.0f}")
+        st.write(f"**Rent:** ${parsed_data['Rent']:,.0f}")
+        st.write(f"**Status:** {parsed_data['Status']}")
+        st.write(f"**Positives (char count: {len(parsed_data['Positives'])}):**")
+        st.write(parsed_data['Positives'][:200] + "..." if len(parsed_data['Positives']) > 200 else parsed_data['Positives'])
+        st.write(f"**Negatives (char count: {len(parsed_data['Negatives'])}):**")
+        st.write(parsed_data['Negatives'][:200] + "..." if len(parsed_data['Negatives']) > 200 else parsed_data['Negatives'])
 
 # Management tools: delete & compare
 st.sidebar.markdown("---")
@@ -333,7 +355,7 @@ if import_clicked and gemini_text and gemini_text.strip():
     if parsed_data.get("Address"):
         st.sidebar.success(f"✓ Parsed: {parsed_data['Address']}")
     else:
-        st.sidebar.warning("⚠ No address found. Check format.")
+        st.sidebar.warning("⚠ No address found. Check debug panel.")
 
 # If we have a parsed payload stored, render the confirmation form
 parsed = st.session_state.get('gemini_parsed')
@@ -350,8 +372,8 @@ if parsed:
         except ValueError:
             status_index = 0
         status2 = st.selectbox("Status", status_options, index=status_index)
-        positives2 = st.text_area("Positives", parsed.get("Positives", ""))
-        negatives2 = st.text_area("Negatives", parsed.get("Negatives", ""))
+        positives2 = st.text_area("Positives", parsed.get("Positives", ""), height=100)
+        negatives2 = st.text_area("Negatives", parsed.get("Negatives", ""), height=100)
         confirm_import = st.form_submit_button("Confirm Import to Pipeline")
 
     if confirm_import and addr2:
