@@ -22,6 +22,7 @@ st.markdown("#### 🛡️ 🧙‍♂️ 💪 💀 👊  — mix of power, mystic
 # ---------- Helper: Gemini text parser ----------
 def parse_gemini_text(text: str) -> dict:
     """Best-effort parsing for pasted Gemini content.
+    Handles various formats including Gemini's typical output with labels, colons, dashes, etc.
     Looks for lines like `Address: ...`, `Units: 3`, `Price: $400,000`, `Rent: $4,500`,
     `Status: Underwriting`, `Positives: ...`, `Negatives: ...`.
     Falls back to heuristics when explicit labels aren't present.
@@ -34,18 +35,19 @@ def parse_gemini_text(text: str) -> dict:
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     joined = "\n".join(lines)
 
-    # Label-based extraction
+    # Label-based extraction - more flexible pattern
     def find_label(label):
-        m = re.search(rf"{label}\s*[:\-]\s*(.+?)(?:\n|$)", joined, re.IGNORECASE)
+        # Match patterns like "Address: ...", "Address — ...", "Address ...", etc.
+        m = re.search(rf"{label}\s*[:\-–—]?\s*(.+?)(?:\n|$)", joined, re.IGNORECASE)
         return m.group(1).strip() if m else None
 
-    address = find_label("Address") or find_label("Property")
-    units = find_label("Units")
-    price = find_label("Price")
-    rent = find_label("Rent") or find_label("Est\. Gross Monthly Rent")
-    status = find_label("Status")
-    positives = find_label("Positives")
-    negatives = find_label("Negatives")
+    address = find_label("Address") or find_label("Property") or find_label("Location")
+    units = find_label("Units") or find_label("Unit")
+    price = find_label("Price") or find_label("Purchase.*Price") or find_label("List")
+    rent = find_label("Rent") or find_label("Est.*Rent") or find_label("Est.*Gross.*Monthly.*Rent") or find_label("Monthly.*Income")
+    status = find_label("Status") or find_label("Pipeline")
+    positives = find_label("Positives") or find_label("Pros") or find_label("Strengths") or find_label("Advantages")
+    negatives = find_label("Negatives") or find_label("Cons") or find_label("Risks") or find_label("Concerns")
 
     # Try dollar-based finds if labeled values not found
     if not price:
@@ -53,15 +55,13 @@ def parse_gemini_text(text: str) -> dict:
         if m:
             price = m.group(1)
     if not rent:
-        # look for a second dollar amount or patterns like 'monthly rent' nearby
         dollars = re.findall(r"\$\s*([\d,]+(?:\.\d+)?)", joined)
         if len(dollars) >= 2:
             rent = dollars[1]
         elif dollars:
-            # single dollar found: decide if it's rent or price based on context
             context_idx = joined.lower().find(dollars[0])
             prev = joined[max(0, context_idx-50):context_idx].lower()
-            if "rent" in prev or "monthly" in prev:
+            if "rent" in prev or "monthly" in prev or "income" in prev:
                 rent = dollars[0]
             else:
                 price = dollars[0]
@@ -278,11 +278,11 @@ st.sidebar.header("🛠️ Manage Listings")
 if 'properties' not in st.session_state:
     # Start from the built-in defaults, then merge persisted ones
     st.session_state.properties = [
-        {"Address": "6-Family Hartford", "Units": 6, "Price": 830000, "Rent": 7200, "Status": "Underwriting", "Positives": "Max scale with 5 income streams, Commercial financing eligibility, High cash flow cushion", "Negatives": "Exceeds $725k pre-approval, High management intensity, Maintenance volatility", "Favorite": False},
-        {"Address": "40 Allen Place", "Units": 3, "Price": 420000, "Rent": 4500, "Status": "Underwriting", "Positives": "Turnkey condition requires low cap-ex, Leaves budget breathing room, Better lifestyle balance/privacy", "Negatives": "Lower absolute cash-flow ceiling, 33% vacancy risk, Highly competitive market", "Favorite": False},
-        {"Address": "19-21 Mill St", "Units": 2, "Price": 340000, "Rent": 3100, "Status": "Screened", "Positives": "Separate utilities/mechanicals, Lowest purchase price and risk, Light management load", "Negatives": "Only subsidies mortgage, Zero immediate scale, 50% vacancy risk exposure", "Favorite": False},
-        {"Address": "285 Zion St", "Units": 4, "Price": 490000, "Rent": 5200, "Status": "Monitoring", "Positives": "Good unit mix, Emerging location", "Negatives": "Awaiting rent roll verification", "Favorite": False},
-        {"Address": "98-100 Capen St", "Units": 3, "Price": 380000, "Rent": 3900, "Status": "Monitoring", "Positives": "Low entry price, Strong initial cap rate", "Negatives": "Drive by required to assess block", "Favorite": False}
+        {"Address": "6-Family Hartford", "Units": 6, "Price": 830000, "Rent": 7200, "Status": "Underwriting", "Positives": "Max scale with 5 income streams, Commercial financing eligibility, High[...]
+        {"Address": "40 Allen Place", "Units": 3, "Price": 420000, "Rent": 4500, "Status": "Underwriting", "Positives": "Turnkey condition requires low cap-ex, Leaves budget breathing room, Bette[...]
+        {"Address": "19-21 Mill St", "Units": 2, "Price": 340000, "Rent": 3100, "Status": "Screened", "Positives": "Separate utilities/mechanicals, Lowest purchase price and risk, Light managemen[...]
+        {"Address": "285 Zion St", "Units": 4, "Price": 490000, "Rent": 5200, "Status": "Monitoring", "Positives": "Good unit mix, Emerging location", "Negatives": "Awaiting rent roll verificatio[...]
+        {"Address": "98-100 Capen St", "Units": 3, "Price": 380000, "Rent": 3900, "Status": "Monitoring", "Positives": "Low entry price, Strong initial cap rate", "Negatives": "Drive by required [...]
     ]
     # Merge persisted properties (avoid duplicates by Address)
     persisted = load_persisted_properties()
