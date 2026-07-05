@@ -35,19 +35,25 @@ def parse_gemini_text(text: str) -> dict:
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     joined = "\n".join(lines)
 
-    # Label-based extraction - more flexible pattern
+    # Label-based extraction - more flexible pattern that handles multiline
     def find_label(label):
         # Match patterns like "Address: ...", "Address — ...", "Address ...", etc.
-        m = re.search(rf"{label}\s*[:\-–—]?\s*(.+?)(?:\n|$)", joined, re.IGNORECASE)
-        return m.group(1).strip() if m else None
+        # Use DOTALL to match across newlines for multiline values
+        m = re.search(rf"^{label}\s*[:\-–—]?\s*(.+?)(?:\n[A-Z]|\Z)", joined, re.IGNORECASE | re.MULTILINE)
+        if m:
+            value = m.group(1).strip()
+            # Clean up any trailing labels or extra text
+            value = re.sub(r'\n.*', '', value, flags=re.DOTALL).strip()
+            return value if value else None
+        return None
 
     address = find_label("Address") or find_label("Property") or find_label("Location")
     units = find_label("Units") or find_label("Unit")
-    price = find_label("Price") or find_label("Purchase.*Price") or find_label("List")
-    rent = find_label("Rent") or find_label("Est.*Rent") or find_label("Est.*Gross.*Monthly.*Rent") or find_label("Monthly.*Income")
+    price = find_label("Price") or find_label("Purchase") or find_label("List")
+    rent = find_label("Rent") or find_label("Est.*Rent") or find_label("Monthly.*Income")
     status = find_label("Status") or find_label("Pipeline")
-    positives = find_label("Positives") or find_label("Pros") or find_label("Strengths") or find_label("Advantages")
-    negatives = find_label("Negatives") or find_label("Cons") or find_label("Risks") or find_label("Concerns")
+    positives = find_label("Positives") or find_label("Pros") or find_label("Strengths")
+    negatives = find_label("Negatives") or find_label("Cons") or find_label("Risks")
 
     # Try dollar-based finds if labeled values not found
     if not price:
@@ -60,7 +66,7 @@ def parse_gemini_text(text: str) -> dict:
             rent = dollars[1]
         elif dollars:
             context_idx = joined.lower().find(dollars[0])
-            prev = joined[max(0, context_idx-50):context_idx].lower()
+            prev = joined[max(0, context_idx-100):context_idx].lower()
             if "rent" in prev or "monthly" in prev or "income" in prev:
                 rent = dollars[0]
             else:
@@ -278,11 +284,11 @@ st.sidebar.header("🛠️ Manage Listings")
 if 'properties' not in st.session_state:
     # Start from the built-in defaults, then merge persisted ones
     st.session_state.properties = [
-        {"Address": "6-Family Hartford", "Units": 6, "Price": 830000, "Rent": 7200, "Status": "Underwriting", "Positives": "Max scale with 5 income streams, Commercial financing eligibility, High upside", "Negatives": "Older building, Multi-unit complexity"},
-        {"Address": "40 Allen Place", "Units": 3, "Price": 420000, "Rent": 4500, "Status": "Underwriting", "Positives": "Turnkey condition requires low cap-ex, Leaves budget breathing room, Better schools", "Negatives": "Market softening concerns"},
-        {"Address": "19-21 Mill St", "Units": 2, "Price": 340000, "Rent": 3100, "Status": "Screened", "Positives": "Separate utilities/mechanicals, Lowest purchase price and risk, Light management", "Negatives": "Smaller revenue base"},
-        {"Address": "285 Zion St", "Units": 4, "Price": 490000, "Rent": 5200, "Status": "Monitoring", "Positives": "Good unit mix, Emerging location", "Negatives": "Awaiting rent roll verification"},
-        {"Address": "98-100 Capen St", "Units": 3, "Price": 380000, "Rent": 3900, "Status": "Monitoring", "Positives": "Low entry price, Strong initial cap rate", "Negatives": "Drive by required, Needs inspection"},
+        {"Address": "6-Family Hartford", "Units": 6, "Price": 830000, "Rent": 7200, "Status": "Underwriting", "Positives": "Max scale with 5 income streams, Commercial financing eligibility, High upside", "Negatives": "Older building, Multi-unit complexity", "Favorite": False},
+        {"Address": "40 Allen Place", "Units": 3, "Price": 420000, "Rent": 4500, "Status": "Underwriting", "Positives": "Turnkey condition requires low cap-ex, Leaves budget breathing room, Better schools", "Negatives": "Market softening concerns", "Favorite": False},
+        {"Address": "19-21 Mill St", "Units": 2, "Price": 340000, "Rent": 3100, "Status": "Screened", "Positives": "Separate utilities/mechanicals, Lowest purchase price and risk, Light management", "Negatives": "Smaller revenue base", "Favorite": False},
+        {"Address": "285 Zion St", "Units": 4, "Price": 490000, "Rent": 5200, "Status": "Monitoring", "Positives": "Good unit mix, Emerging location", "Negatives": "Awaiting rent roll verification", "Favorite": False},
+        {"Address": "98-100 Capen St", "Units": 3, "Price": 380000, "Rent": 3900, "Status": "Monitoring", "Positives": "Low entry price, Strong initial cap rate", "Negatives": "Drive by required, Needs inspection", "Favorite": False},
     ]
     # Merge persisted properties (avoid duplicates by Address)
     persisted = load_persisted_properties()
@@ -310,7 +316,10 @@ if submit and address:
 # --- GEMINI import flow using session_state so form survives reruns ---
 # When Parse is clicked, store parsed payload in session_state
 if import_clicked and gemini_text and gemini_text.strip():
-    st.session_state['gemini_parsed'] = parse_gemini_text(gemini_text)
+    parsed_data = parse_gemini_text(gemini_text)
+    st.session_state['gemini_parsed'] = parsed_data
+    # Debug: Show what was parsed
+    st.sidebar.info(f"Parsed: {parsed_data['Address']}")
 
 # If we have a parsed payload stored, render the confirmation form
 parsed = st.session_state.get('gemini_parsed')
