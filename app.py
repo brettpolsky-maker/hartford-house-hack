@@ -21,19 +21,58 @@ st.markdown("#### 🛡️ 🧙‍♂️ 💪 💀 👊  — mix of power, mystic
 
 # ---------- Helper: Gemini text parser ----------
 def parse_gemini_text(text: str) -> dict:
-    """Simple parsing for pasted Gemini content.
-    Looks for: Address: ..., Units: 3, Price: $400,000, Rent: $4,500, etc.
-    """
+    """Parse Gemini content - handles both JSON and plain text formats."""
     out = {"Address": "", "Units": 1, "Price": 0.0, "Rent": 0.0, "Status": "Monitoring", "Positives": "", "Negatives": ""}
     if not text:
         return out
 
+    # Try JSON first
+    try:
+        data = json.loads(text)
+        
+        # Extract address
+        address_parts = []
+        if data.get("address"):
+            address_parts.append(data["address"])
+        if data.get("city"):
+            address_parts.append(data["city"])
+        if data.get("state"):
+            address_parts.append(data["state"])
+        if address_parts:
+            out["Address"] = ", ".join(address_parts)
+        
+        # Extract units count
+        if "units" in data and isinstance(data["units"], list):
+            out["Units"] = len(data["units"])
+            # Sum up rent from all units
+            total_rent = sum(unit.get("estRent", 0) for unit in data["units"])
+            out["Rent"] = float(total_rent) if total_rent else 0.0
+        
+        # Extract price
+        if "financials" in data and data["financials"].get("listPrice"):
+            out["Price"] = float(data["financials"]["listPrice"])
+        
+        # Extract status
+        if data.get("status"):
+            out["Status"] = data["status"]
+        
+        # Extract positives and negatives
+        if "analysis" in data:
+            if data["analysis"].get("positives"):
+                out["Positives"] = ", ".join(data["analysis"]["positives"])
+            if data["analysis"].get("negatives"):
+                out["Negatives"] = ", ".join(data["analysis"]["negatives"])
+        
+        return out
+    except json.JSONDecodeError:
+        pass
+    
+    # Fall back to plain text parsing
     lines = text.split('\n')
     
-    for i, line in enumerate(lines):
+    for line in lines:
         line_lower = line.lower()
         
-        # Simple direct extraction: look for label: value
         if 'address' in line_lower and ':' in line:
             parts = line.split(':', 1)
             if len(parts) > 1:
