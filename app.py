@@ -1,5 +1,5 @@
 # =========================
-# 🚀 RENT COMP ESTIMATOR
+# 🚀 RENT COMP ESTIMATOR (CT MARKET MODEL)
 # =========================
 def estimate_market_rent(city: str, units: int = 1, beds: int = 2):
     city = (city or "").lower()
@@ -28,7 +28,7 @@ def estimate_market_rent(city: str, units: int = 1, beds: int = 2):
 
 
 # =========================
-# 🧠 FIXED GEMINI PARSER
+# 🧠 GEMINI PARSER (ROBUST + PHONE-SAFE)
 # =========================
 def parse_gemini_text(text: str) -> dict:
     if not text:
@@ -49,7 +49,7 @@ def parse_gemini_text(text: str) -> dict:
         "Favorite": False
     }
 
-    # ---- JSON MODE ----
+    # -------- JSON MODE --------
     try:
         data = json.loads(text)
 
@@ -70,6 +70,7 @@ def parse_gemini_text(text: str) -> dict:
                 total_rent += float(u.get("estRent", 0) or 0)
 
             out["Rent"] = total_rent
+
             out["Beds"] = units[0].get("beds", 2)
             out["Baths"] = units[0].get("baths", 1)
 
@@ -82,56 +83,63 @@ def parse_gemini_text(text: str) -> dict:
     except Exception:
         pass
 
-    # ---- TEXT FALLBACK ----
+    # -------- TEXT MODE FALLBACK --------
     for line in text.split("\n"):
         l = line.lower()
 
         if "address" in l and ":" in line:
             out["Address"] = line.split(":", 1)[1].strip()
 
-        if "city" in l and ":" in line:
+        elif "city" in l and ":" in line:
             out["City"] = line.split(":", 1)[1].strip()
 
-        if "units" in l and ":" in line:
+        elif "units" in l and ":" in line:
             try:
-                out["Units"] = int(re.findall(r"\d+", line)[0])
+                out["Units"] = int("".join(filter(str.isdigit, line)))
             except:
                 pass
 
-        if "beds" in l and ":" in line:
+        elif "beds" in l and ":" in line:
             try:
-                out["Beds"] = int(re.findall(r"\d+", line)[0])
+                out["Beds"] = int("".join(filter(str.isdigit, line)))
             except:
                 pass
 
-        if "price" in l and ":" in line:
+        elif "price" in l and ":" in line:
             try:
-                out["Price"] = float(re.sub(r"[^\d.]", "", line.split(":")[1]))
+                out["Price"] = float("".join(c for c in line if c.isdigit() or c == "."))
             except:
                 pass
 
-        if "rent" in l and ":" in line:
+        elif "rent" in l and ":" in line:
             try:
-                out["Rent"] = float(re.sub(r"[^\d.]", "", line.split(":")[1]))
+                out["Rent"] = float("".join(c for c in line if c.isdigit() or c == "."))
             except:
                 pass
 
-        if "positives" in l and ":" in line:
+        elif "positives" in l and ":" in line:
             out["Positives"].append(line.split(":", 1)[1].strip())
 
-        if "negatives" in l and ":" in line:
+        elif "negatives" in l and ":" in line:
             out["Negatives"].append(line.split(":", 1)[1].strip())
 
     return out
 
 
 # =========================
-# 🧼 PIPELINE NORMALIZER
+# 🧼 PIPELINE NORMALIZER (CLEAN EXPORT FORMAT)
 # =========================
 def normalize_for_pipeline(p):
     return {
         "Address": p.get("Address", ""),
         "City": p.get("City", ""),
-        "Units": p.get("Units", 1),
-        "Beds": p.get("Beds", 2),
-       
+        "Units": int(p.get("Units", 1) or 1),
+        "Beds": int(p.get("Beds", 2) or 2),
+        "Baths": int(p.get("Baths", 1) or 1),
+        "Price": float(p.get("Price", 0) or 0),
+        "Rent": float(p.get("Rent", 0) or 0),
+        "Status": p.get("Status", "Monitoring"),
+        "Positives": p.get("Positives", []),
+        "Negatives": p.get("Negatives", []),
+        "Favorite": bool(p.get("Favorite", False))
+    }
