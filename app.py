@@ -318,4 +318,4 @@ if parsed:
     positives2 = st.text_area("Positives", parsed.get("Positives", ""), height=100)
     negatives2 = st.text_area("Negatives", parsed.get("Negatives", ""), height=100)
     confirm_import = st.form_submit_button("Confirm Import to Pipeline")
-", clear_)
+
