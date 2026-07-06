@@ -238,6 +238,8 @@ def realtor_link(address: str) -> str:
 
 # 1. SIDEBAR: Global Financial Variables & Deal Input
 st.sidebar.header("⚙️ Global Deal Mechanics")
+st.sidebar.info("💡 **What these do:** Adjusting these inputs updates calculations globally. The 'Operating Expenses' slider reserves a percentage of gross rent for maintenance, insurance, and vacancies before calculating your property metrics.")
+
 interest_rate = st.sidebar.slider("Interest Rate (%)", 5.0, 8.5, 6.5, 0.1) / 100
 down_payment_pct = st.sidebar.slider("Down Payment (%)", 3.5, 20.0, 5.0, 0.5) / 100
 op_expense_pct = st.sidebar.slider("Operating Expenses (% of Rent)", 35, 55, 45, 5) / 100
@@ -400,6 +402,17 @@ st.markdown("---")
 
 # 4. MASTER DEAL PIPELINE TABLE
 st.subheader("📊 Master Pipeline Overview")
+
+# Metric definitions container for clarity before reading the large data table
+with st.expander("📘 Financial Field Guide: What do these column metrics mean?", expanded=False):
+    st.markdown("""
+    *   **Est. Mortgage:** The monthly Principal & Interest (P&I) payment based on your global settings. It does not include local property taxes or insurance, which vary per deal.
+    *   **NOI (Net Operating Income):** Total building revenue minus operating expenses (maintenance, water, insurance, vacancies). *Crucial because it shows how profitable the asset is on its own before any loan or debt is factored in.*
+    *   **Cap Rate (Capitalization Rate):** Annual NOI divided by purchase price. It acts as an unleveraged rate of return to help you evaluate if the price is fair compared to the area's baseline risk.
+    *   **Net Cash Flow:** Your monthly take-home money *while house-hacking*. This represents cash incoming from the remaining tenant units minus the entire building's expenses and mortgage payment while you occupy 1 unit.
+    *   **Cash on Cash (CoC):** Your annual net cash flow divided by your initial cash out of pocket (down payment amount). It tells you the exact cash return rate your physical cash is yielding.
+    """)
+
 display_cols = ["Address", "Units", "Price", "Rent", "Status", "Est. Mortgage", "Monthly NOI", "Annual NOI", "Cap Rate", "Net Cash Flow", "Annual Cash Flow", "Cash on Cash", "Favorite"]
 
 if not df.empty:
@@ -478,6 +491,7 @@ if selected_address and not df.empty:
     else:
         st.markdown(f"### {deal['Address']}")
 
+    # Metric visual split card layout
     m_col1, m_col2, m_col3 = st.columns(3)
     m_col1.metric("Price", fmt_currency(deal['Price']))
     m_col1.metric("Units", int(deal['Units']))
@@ -485,6 +499,11 @@ if selected_address and not df.empty:
     m_col2.metric("Annual NOI", fmt_currency(deal['Annual NOI']))
     m_col3.metric("Cap Rate", f"{deal['Cap Rate']*100:.2f}%" if pd.notna(deal['Cap Rate']) else "-")
     m_col3.metric("Annual Cash Flow", fmt_currency(deal['Annual Cash Flow']))
+
+    # Direct inline contextual card insight blocks explaining metric relationships
+    st.info(f"💡 **Deep Dive Analysis Rules for {deal['Address']}:** "
+            f"The property's annual operational margin (**NOI**) is **{fmt_currency(deal['Annual NOI'])}**. This is what shields you from financial losses. "
+            f"With a **Cap Rate** of **{deal['Cap Rate']*100:.2f}%**, you can quickly judge if the return profile fits your targets compared to baseline risk profiles in Hartford.")
 
     st.markdown("---")
     card_col1, card_col2 = st.columns(2)
