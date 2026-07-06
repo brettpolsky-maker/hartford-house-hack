@@ -307,4 +307,4 @@ if import_clicked and gemini_text and gemini_text.strip():
 parsed = st.session_state.get('gemini_parsed')
 if parsed:
     st.sidebar.markdown("**Parsed result — edit values and confirm import**")
-    with st.sidebar.form("gemini_confirm_form", clear_
+    with st.sidebar.form("gemini_confirm_form", clear_)
