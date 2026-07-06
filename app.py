@@ -307,4 +307,15 @@ if import_clicked and gemini_text and gemini_text.strip():
 parsed = st.session_state.get('gemini_parsed')
 if parsed:
     st.sidebar.markdown("**Parsed result — edit values and confirm import**")
-    with st.sidebar.form("gemini_confirm_form", clear_)
+    with st.sidebar.form("gemini_confirm_form", clear_on_submit=False):
+    addr2 = st.text_input("Address", parsed.get("Address", ""))
+    units2 = st.number_input("Units", min_value=1, max_value=100, value=int(parsed.get("Units", 1)))
+    price2 = st.number_input("Price ($)", min_value=0.0, value=float(parsed.get("Price", 0.0)))
+    rent2 = st.number_input("Rent ($)", min_value=0.0, value=float(parsed.get("Rent", 0.0)))
+    status_options = ["Monitoring", "Screened", "Underwriting", "Offer Made", "Dead Deal"]
+    status_index = status_options.index(parsed.get("Status", "Monitoring")) if parsed.get("Status") in status_options else 0
+    status2 = st.selectbox("Status", status_options, index=status_index)
+    positives2 = st.text_area("Positives", parsed.get("Positives", ""), height=100)
+    negatives2 = st.text_area("Negatives", parsed.get("Negatives", ""), height=100)
+    confirm_import = st.form_submit_button("Confirm Import to Pipeline")
+", clear_)
