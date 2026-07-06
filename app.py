@@ -1,29 +1,32 @@
+import json
+import re
+
 # =========================
 # 🚀 RENT COMP ESTIMATOR (CT MARKET MODEL)
 # =========================
-def estimate_market_rent(city: str, units: int = 1, beds: int = 2):
+def estimate_market_rent(city: str, units: int = 1, beds: int = 2) -> float:
     city = (city or "").lower()
 
-    if "hartford" in city:
-        base_2br = 1450
-        base_3br = 1750
-    elif "new britain" in city:
-        base_2br = 1400
-        base_3br = 1700
-    elif "waterbury" in city:
-        base_2br = 1350
-        base_3br = 1650
-    else:
-        base_2br = 1400
-        base_3br = 1700
+    # Matrix lookup is cleaner and easier to scale than nested if/elifs
+    market_matrix = {
+        "hartford": {"base_2br": 1450, "base_3br": 1750},
+        "new britain": {"base_2br": 1400, "base_3br": 1700},
+        "waterbury": {"base_2br": 1350, "base_3br": 1650},
+        "default": {"base_2br": 1400, "base_3br": 1700}
+    }
+    
+    # Find matching city or default
+    tier = next((v for k, v in market_matrix.items() if k in city), market_matrix["default"])
 
     if beds <= 1:
-        base = base_2br - 250
+        base = tier["base_2br"] - 250
     elif beds == 2:
-        base = base_2br
+        base = tier["base_2br"]
     else:
-        base = base_3br
+        base = tier["base_3br"]
 
+    # NOTE: This assumes all units have the same bedroom count. 
+    # For true accuracy, calculate rent per unit dynamically.
     return round(base * units * 0.98, 0)
 
 
@@ -31,115 +34,106 @@ def estimate_market_rent(city: str, units: int = 1, beds: int = 2):
 # 🧠 GEMINI PARSER (ROBUST + PHONE-SAFE)
 # =========================
 def parse_gemini_text(text: str) -> dict:
-    if not text:
-        return {}
-
     out = {
-        "Address": "",
-        "City": "",
-        "State": "",
-        "Units": 1,
-        "Beds": 2,
-        "Baths": 1,
-        "Price": 0.0,
-        "Rent": 0.0,
-        "Status": "Monitoring",
-        "Positives": [],
-        "Negatives": [],
-        "Favorite": False
+        "Address": "", "City": "", "State": "", "Units": 1, "Beds": 2,
+        "Baths": 1, "Price": 0.0, "Rent": 0.0, "Status": "Monitoring",
+        "Positives": [], "Negatives": [], "Favorite": False
     }
+    
+    if not text:
+        return out
 
     # -------- JSON MODE --------
     try:
         data = json.loads(text)
+        out["Address"] = data.get("address") or ""
+        out["City"] = data.get("city") or ""
+        out["State"] = data.get("state") or ""
+        out["Status"] = data.get("status") or "Monitoring"
+        
+        fin = data.get("financials") or {}
+        # Safer conversion using a helper or try/except block
+        try:
+            out["Price"] = float(fin.get("listPrice") or 0)
+        except (ValueError, TypeError):
+            out["Price"] = 0.0
 
-        out["Address"] = data.get("address", "") or ""
-        out["City"] = data.get("city", "") or ""
-        out["State"] = data.get("state", "") or ""
-        out["Status"] = data.get("status", "Monitoring")
-
-        fin = data.get("financials", {})
-        out["Price"] = float(fin.get("listPrice", 0) or 0)
-
-        units = data.get("units", [])
-        if isinstance(units, list) and len(units) > 0:
+        units = data.get("units")
+        if isinstance(units, list) and units:
             out["Units"] = len(units)
-
-            total_rent = 0
+            
+            # Sum up rents safely
+            total_rent = 0.0
             for u in units:
-                total_rent += float(u.get("estRent", 0) or 0)
-
+                try:
+                    total_rent += float(u.get("estRent") or 0)
+                except (ValueError, TypeError):
+                    pass
             out["Rent"] = total_rent
 
-            out["Beds"] = units[0].get("beds", 2)
-            out["Baths"] = units[0].get("baths", 1)
+            # Average or use first unit's specs
+            out["Beds"] = int(units[0].get("beds") or 2)
+            out["Baths"] = int(units[0].get("baths") or 1)
 
-        analysis = data.get("analysis", {})
-        out["Positives"] = analysis.get("positives", [])
-        out["Negatives"] = analysis.get("negatives", [])
-
+        analysis = data.get("analysis") or {}
+        out["Positives"] = analysis.get("positives") or []
+        out["Negatives"] = analysis.get("negatives") or []
         return out
 
     except Exception:
-        pass
+        pass # Fallback to text parsing
 
     # -------- TEXT MODE FALLBACK --------
     for line in text.split("\n"):
-        l = line.lower()
+        if ":" not in line:
+            continue
+            
+        key, val = [part.strip() for part in line.split(":", 1)]
+        k_low = key.lower()
 
-        if "address" in l and ":" in line:
-            out["Address"] = line.split(":", 1)[1].strip()
-
-        elif "city" in l and ":" in line:
-            out["City"] = line.split(":", 1)[1].strip()
-
-        elif "units" in l and ":" in line:
-            try:
-                out["Units"] = int("".join(filter(str.isdigit, line)))
-            except:
-                pass
-
-        elif "beds" in l and ":" in line:
-            try:
-                out["Beds"] = int("".join(filter(str.isdigit, line)))
-            except:
-                pass
-
-        elif "price" in l and ":" in line:
-            try:
-                out["Price"] = float("".join(c for c in line if c.isdigit() or c == "."))
-            except:
-                pass
-
-        elif "rent" in l and ":" in line:
-            try:
-                out["Rent"] = float("".join(c for c in line if c.isdigit() or c == "."))
-            except:
-                pass
-
-        elif "positives" in l and ":" in line:
-            out["Positives"].append(line.split(":", 1)[1].strip())
-
-        elif "negatives" in l and ":" in line:
-            out["Negatives"].append(line.split(":", 1)[1].strip())
+        if "address" in k_low:
+            out["Address"] = val
+        elif "city" in k_low:
+            out["City"] = val
+        elif "units" in k_low:
+            # Matches the first integer found
+            match = re.search(r'\d+', val)
+            out["Units"] = int(match.group()) if match else out["Units"]
+        elif "beds" in k_low:
+            match = re.search(r'\d+', val)
+            out["Beds"] = int(match.group()) if match else out["Beds"]
+        elif "price" in k_low:
+            # Matches first float/integer pattern, ignoring commas or dollar signs
+            match = re.search(r'\d[\d,]*\.?\d*', val)
+            if match:
+                out["Price"] = float(match.group().replace(",", ""))
+        elif "rent" in k_low:
+            match = re.search(r'\d[\d,]*\.?\d*', val)
+            if match:
+                out["Rent"] = float(match.group().replace(",", ""))
+        elif "positives" in k_low:
+            out["Positives"].append(val)
+        elif "negatives" in k_low:
+            out["Negatives"].append(val)
 
     return out
 
 
 # =========================
-# 🧼 PIPELINE NORMALIZER (CLEAN EXPORT FORMAT)
+# 🧼 PIPELINE NORMALIZER
 # =========================
-def normalize_for_pipeline(p):
+def normalize_for_pipeline(p: dict) -> dict:
+    # Keeps your clean casting dictionary, guarantees no None types slip through
     return {
-        "Address": p.get("Address", ""),
-        "City": p.get("City", ""),
-        "Units": int(p.get("Units", 1) or 1),
-        "Beds": int(p.get("Beds", 2) or 2),
-        "Baths": int(p.get("Baths", 1) or 1),
-        "Price": float(p.get("Price", 0) or 0),
-        "Rent": float(p.get("Rent", 0) or 0),
-        "Status": p.get("Status", "Monitoring"),
-        "Positives": p.get("Positives", []),
-        "Negatives": p.get("Negatives", []),
-        "Favorite": bool(p.get("Favorite", False))
+        "Address": str(p.get("Address") or ""),
+        "City": str(p.get("City") or ""),
+        "Units": int(p.get("Units") or 1),
+        "Beds": int(p.get("Beds") or 2),
+        "Baths": int(p.get("Baths") or 1),
+        "Price": float(p.get("Price") or 0.0),
+        "Rent": float(p.get("Rent") or 0.0),
+        "Status": str(p.get("Status") or "Monitoring"),
+        "Positives": list(p.get("Positives") or []),
+        "Negatives": list(p.get("Negatives") or []),
+        "Favorite": bool(p.get("Favorite") or False)
     }
