@@ -308,14 +308,211 @@ parsed = st.session_state.get('gemini_parsed')
 if parsed:
     st.sidebar.markdown("**Parsed result — edit values and confirm import**")
     with st.sidebar.form("gemini_confirm_form", clear_on_submit=False):
-    addr2 = st.text_input("Address", parsed.get("Address", ""))
-    units2 = st.number_input("Units", min_value=1, max_value=100, value=int(parsed.get("Units", 1)))
-    price2 = st.number_input("Price ($)", min_value=0.0, value=float(parsed.get("Price", 0.0)))
-    rent2 = st.number_input("Rent ($)", min_value=0.0, value=float(parsed.get("Rent", 0.0)))
-    status_options = ["Monitoring", "Screened", "Underwriting", "Offer Made", "Dead Deal"]
-    status_index = status_options.index(parsed.get("Status", "Monitoring")) if parsed.get("Status") in status_options else 0
-    status2 = st.selectbox("Status", status_options, index=status_index)
-    positives2 = st.text_area("Positives", parsed.get("Positives", ""), height=100)
-    negatives2 = st.text_area("Negatives", parsed.get("Negatives", ""), height=100)
-    confirm_import = st.form_submit_button("Confirm Import to Pipeline")
+        addr2 = st.text_input("Address", parsed.get("Address", ""))
+        units2 = st.number_input("Units", min_value=1, max_value=100, value=int(parsed.get("Units", 1)))
+        price2 = st.number_input("Price ($)", min_value=0.0, value=float(parsed.get("Price", 0.0)))
+        rent2 = st.number_input("Rent ($)", min_value=0.0, value=float(parsed.get("Rent", 0.0)))
+        status_options = ["Monitoring", "Screened", "Underwriting", "Offer Made", "Dead Deal"]
+        status_index = status_options.index(parsed.get("Status", "Monitoring")) if parsed.get("Status") in status_options else 0
+        status2 = st.selectbox("Status", status_options, index=status_index)
+        positives2 = st.text_area("Positives", parsed.get("Positives", ""), height=100)
+        negatives2 = st.text_area("Negatives", parsed.get("Negatives", ""), height=100)
+        confirm_import = st.form_submit_button("Confirm Import to Pipeline")
 
+    if confirm_import and addr2:
+        new_prop = {
+            "Address": addr2, "Units": int(units2), "Price": float(price2), "Rent": float(rent2), "Status": status2,
+            "Positives": positives2, "Negatives": negatives2, "Favorite": False
+        }
+        st.session_state.properties = [p for p in st.session_state.properties if p["Address"] != addr2]
+        st.session_state.properties.append(new_prop)
+        save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
+        del st.session_state['gemini_parsed']
+        st.rerun()
+
+# 2. FINANCIAL CALCULATION ENGINE
+processed_deals = []
+for p in st.session_state.properties:
+    try:
+        units = int(p.get("Units", 1) or 1)
+        price = float(p.get("Price", 0) or 0)
+        rent_total = float(p.get("Rent", 0) or 0)
+    except (ValueError, TypeError):
+        units, price, rent_total = 1, 0.0, 0.0
+
+    # Mortgage Calculation
+    loan_amount = price * (1 - down_payment_pct)
+    term_years = 30
+    n = term_years * 12
+    monthly_rate = interest_rate / 12 if interest_rate > 0 else 0
+    if loan_amount > 0 and monthly_rate > 0:
+        mortgage = (loan_amount * monthly_rate) / (1 - (1 + monthly_rate) ** (-n))
+    else:
+        mortgage = loan_amount / n if loan_amount > 0 else 0.0
+
+    # Operating expenses and NOI (Whole Building Basis)
+    total_operating_expenses = rent_total * op_expense_pct
+    monthly_noi = rent_total - total_operating_expenses
+
+    # House-hack adjustment (living in one unit)
+    user_rent_share = rent_total / units if units > 0 else 0
+    remaining_rent = rent_total - user_rent_share
+    
+    # House-hack Cash Flow = Cash incoming from other units minus 100% of P&I and whole building OPEX
+    house_hack_cash_flow = remaining_rent - total_operating_expenses - mortgage
+
+    annual_noi = monthly_noi * 12
+    cap_rate = (annual_noi / price) if price > 0 else 0
+    annual_cash_flow = house_hack_cash_flow * 12
+    down_payment_amount = price * down_payment_pct if price > 0 else 0
+    cash_on_cash = (annual_cash_flow / down_payment_amount) if down_payment_amount > 0 else None
+
+    processed_deals.append({
+        **p,
+        "Est. Mortgage": round(mortgage, 2),
+        "Monthly NOI": round(monthly_noi, 2),
+        "Annual NOI": round(annual_noi, 2),
+        "Cap Rate": round(cap_rate, 4),
+        "Net Cash Flow": round(house_hack_cash_flow, 2),
+        "Annual Cash Flow": round(annual_cash_flow, 2),
+        "Cash on Cash": round(cash_on_cash, 4) if cash_on_cash is not None else None,
+        "Favorite": bool(p.get('Favorite', False))
+    })
+
+df = pd.DataFrame(processed_deals)
+
+# 3. EXECUTIVE METRICS BAR
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("🛡️ Pre-Approval Cap", "$725,000", "Expires Sept 2026")
+col2.metric("🚀 Total Deals Tracked", len(df))
+under_review = len(df[df['Status'] == 'Underwriting']) if not df.empty else 0
+col3.metric("🧙‍♂️ Deals in Underwriting", under_review)
+
+best_deal = "None"
+if not df.empty and "Net Cash Flow" in df.columns:
+    if df["Net Cash Flow"].notna().any():
+        best_idx = df["Net Cash Flow"].idxmax()
+        if pd.notna(best_idx):
+            best_deal = df.loc[best_idx, "Address"]
+col4.metric("💪 Top Cash-Flowing Option", best_deal)
+
+st.markdown("---")
+
+# 4. MASTER DEAL PIPELINE TABLE
+st.subheader("📊 Master Pipeline Overview")
+display_cols = ["Address", "Units", "Price", "Rent", "Status", "Est. Mortgage", "Monthly NOI", "Annual NOI", "Cap Rate", "Net Cash Flow", "Annual Cash Flow", "Cash on Cash", "Favorite"]
+
+if not df.empty:
+    display_df = df[display_cols].copy()
+    display_df['Zillow'] = display_df['Address'].apply(zillow_resolve)
+    display_df['Redfin'] = display_df['Address'].apply(redfin_link)
+    display_df['Realtor'] = display_df['Address'].apply(realtor_link)
+
+    compare_df = display_df.copy()
+    for c in ["Price", "Rent", "Est. Mortgage", "Monthly NOI", "Annual NOI", "Net Cash Flow", "Annual Cash Flow", "Cash on Cash"]:
+        compare_df[c] = compare_df[c].astype(float)
+
+    for c in ["Price", "Rent", "Est. Mortgage", "Monthly NOI", "Annual NOI", "Net Cash Flow", "Annual Cash Flow"]:
+        display_df[c] = display_df[c].apply(lambda x: fmt_currency(x) if pd.notna(x) else "-")
+
+    display_df['Cap Rate'] = display_df['Cap Rate'].apply(lambda x: f"{x*100:.2f}%" if pd.notna(x) else "-")
+    display_df['Cash on Cash'] = display_df['Cash on Cash'].apply(lambda x: f"{x*100:.2f}%" if pd.notna(x) else "-")
+    display_df['Favorite'] = display_df['Favorite'].apply(lambda v: '⭐' if v else '')
+
+    st.dataframe(display_df, use_container_width=True)
+
+    # Quick links
+    st.markdown("---")
+    st.subheader("🔗 Quick Property Links")
+    rows = []
+    for idx, row in display_df.iterrows():
+        rows.append(f"<tr><td><b>{row['Address']}</b></td><td><a href='{row['Zillow']}' target='_blank'>🏠 Zillow</a></td><td><a href='{row['Redfin']}' target='_blank'>🔎 Redfin</a></td><td><a href='{row['Realtor']}' target='_blank'>📋 Realtor</a></td></tr>")
+    st.markdown("<table>" + "".join(rows) + "</table>", unsafe_allow_html=True)
+
+    # Copy Field
+    st.markdown("**Quick Copy Address**")
+    copy_choice = st.selectbox("Choose address to copy", display_df['Address'].tolist())
+    if st.button("Copy address to field"):
+        st.session_state['copied_address'] = copy_choice
+    st.text_input("Address (copy from here)", value=st.session_state.get('copied_address', ''), key="copy_field")
+
+    # Side by side comparison
+    st.markdown("---")
+    st.subheader("⚖️ Compare Listings")
+    addresses = df['Address'].tolist()
+    selected_for_compare = st.multiselect("Select listings to compare (max 4)", addresses, max_selections=4)
+    if selected_for_compare:
+        to_compare = compare_df[compare_df['Address'].isin(selected_for_compare)].set_index('Address')
+        st.write(to_compare[['Units','Price','Rent','Est. Mortgage','Monthly NOI','Annual NOI','Cap Rate','Net Cash Flow','Annual Cash Flow','Cash on Cash']].transpose())
+
+    # Delete listings
+    st.markdown("---")
+    st.subheader("🗑️ Manage & Delete Listings")
+    selected_for_delete = st.multiselect("Select listings to delete", addresses)
+    if st.button("Delete selected listings", key="delete_selected"):
+        if selected_for_delete:
+            st.session_state.properties = [p for p in st.session_state.properties if p['Address'] not in selected_for_delete]
+            save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
+            st.success(f"Deleted {len(selected_for_delete)} listings")
+            st.rerun()
+else:
+    st.info("No properties currently tracked in the pipeline.")
+    addresses = []
+
+if st.button("Clear all listings", key="clear_all_confirm"):
+    st.session_state.properties = []
+    save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
+    st.success("Cleared all listings")
+    st.rerun()
+
+# 5. DYNAMIC PROPERTY CARD DEEP-DIVES
+st.markdown("---")
+st.subheader("🔎 Deep-Dive Property Vetting")
+selected_address = st.selectbox("Select a property to view detailed pros/cons:", addresses)
+
+if selected_address and not df.empty:
+    deal = df[df['Address'] == selected_address].iloc[0]
+
+    if deal.get('Favorite'):
+        st.markdown(f"### {deal['Address']} ⭐ — Favorite Listing")
+    else:
+        st.markdown(f"### {deal['Address']}")
+
+    m_col1, m_col2, m_col3 = st.columns(3)
+    m_col1.metric("Price", fmt_currency(deal['Price']))
+    m_col1.metric("Units", int(deal['Units']))
+    m_col2.metric("Monthly NOI", fmt_currency(deal['Monthly NOI']))
+    m_col2.metric("Annual NOI", fmt_currency(deal['Annual NOI']))
+    m_col3.metric("Cap Rate", f"{deal['Cap Rate']*100:.2f}%" if pd.notna(deal['Cap Rate']) else "-")
+    m_col3.metric("Annual Cash Flow", fmt_currency(deal['Annual Cash Flow']))
+
+    st.markdown("---")
+    card_col1, card_col2 = st.columns(2)
+    with card_col1:
+        st.success("### 👍 Top Positives / Upsides")
+        for pos in str(deal.get("Positives", "")).split(","):
+            if pos.strip():
+                st.markdown(f"* **{pos.strip()}**")
+    with card_col2:
+        st.error("### 👎 Top Negatives / Risks")
+        for neg in str(deal.get("Negatives", "")).split(","):
+            if neg.strip():
+                st.markdown(f"* **{neg.strip()}**")
+
+    st.markdown("---")
+    action_col1, action_col2, action_col3 = st.columns(3)
+    with action_col1:
+        if st.button("🗑️ Delete this listing"):
+            st.session_state.properties = [p for p in st.session_state.properties if p['Address'] != selected_address]
+            save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
+            st.rerun()
+    with action_col2:
+        if st.button("⭐ Toggle Favorite"):
+            for p in st.session_state.properties:
+                if p['Address'] == selected_address:
+                    p['Favorite'] = not p.get('Favorite', False)
+            save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
+            st.rerun()
+    with action_col3:
+        if st.button("🔁 Refresh Metrics"):
+            st.rerun()
