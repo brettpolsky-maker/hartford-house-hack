@@ -48,10 +48,26 @@ def parse_gemini_text(text: str) -> dict:
             total_rent = sum(unit.get("estRent", 0) for unit in data["units"])
             out["Rent"] = float(total_rent) if total_rent else 0.0
         
-        # Extract price
-        if "financials" in data and data["financials"].get("listPrice"):
-            out["Price"] = float(data["financials"]["listPrice"])
+        # Extract positives and negatives (checks root level first, then falls back to nested analysis)
+        pos_list = data.get("positives")
+        neg_list = data.get("negatives")
         
+        if not pos_list and "analysis" in data and isinstance(data["analysis"], dict):
+            pos_list = data["analysis"].get("positives")
+            
+        if not neg_list and "analysis" in data and isinstance(data["analysis"], dict):
+            neg_list = data["analysis"].get("negatives")
+            
+        if isinstance(pos_list, list):
+            out["Positives"] = ", ".join(str(x) for x in pos_list)
+        elif isinstance(pos_list, str):
+            out["Positives"] = pos_list
+
+        if isinstance(neg_list, list):
+            out["Negatives"] = ", ".join(str(x) for x in neg_list)
+        elif isinstance(neg_list, str):
+            out["Negatives"] = neg_list
+
         # Extract status
         if data.get("status"):
             out["Status"] = data["status"]
