@@ -26,9 +26,17 @@ def parse_gemini_text(text: str) -> dict:
     if not text:
         return out
 
-    # Try JSON first
+    # Clean markdown wrapper blocks if present
+    cleaned_text = text.strip()
+    if cleaned_text.startswith("```json"):
+        cleaned_text = cleaned_text[7:]
+    if cleaned_text.endswith("```"):
+        cleaned_text = cleaned_text[:-3]
+    cleaned_text = cleaned_text.strip()
+
+    # Try JSON parsing
     try:
-        data = json.loads(text)
+        data = json.loads(cleaned_text)
         
         # 1. Extract address safely
         address_parts = []
@@ -38,25 +46,41 @@ def parse_gemini_text(text: str) -> dict:
             address_parts.append(data["city"])
         if data.get("state"):
             address_parts.append(data["state"])
+        
         if address_parts:
             out["Address"] = ", ".join(address_parts)
+        elif data.get("formatted_address"):
+            out["Address"] = data["formatted_address"]
         else:
             out["Address"] = "Unknown Address"
         
         # 2. Extract units count & rent
         if "totalUnits" in data:
             out["Units"] = int(data["totalUnits"])
-        elif "units" in data and isinstance(data["units"], list):
-            out["Units"] = len(data["units"])
-            total_rent = sum(unit.get("estRent", 0) for unit in data["units"])
-            out["Rent"] = float(total_rent) if total_rent else 0.0
+        elif "units" in data:
+            if isinstance(data["units"], list):
+                out["Units"] = len(data["units"])
+                total_rent = sum(unit.get("estRent", unit.get("rent", 0)) for unit in data["units"] if isinstance(unit, dict))
+                out["Rent"] = float(total_rent) if total_rent else 0.0
+            elif str(data["units"]).isdigit():
+                out["Units"] = int(data["units"])
+
+        # If gross rent is explicitly passed at root level
+        if data.get("grossRent"):
+            out["Rent"] = float(data["grossRent"])
+        elif data.get("rent") and not isinstance(data.get("rent"), list):
+            out["Rent"] = float(data["rent"])
 
         # 3. Extract price (handles both listPrice and listingPrice formats)
         if data.get("listingPrice"):
             out["Price"] = float(data["listingPrice"])
+        elif data.get("price"):
+            out["Price"] = float(data["price"])
         elif "financials" in data and isinstance(data["financials"], dict):
             if data["financials"].get("listPrice"):
                 out["Price"] = float(data["financials"]["listPrice"])
+            elif data["financials"].get("price"):
+                out["Price"] = float(data["financials"]["price"])
         
         # 4. Extract status
         if data.get("status"):
@@ -90,47 +114,37 @@ def parse_gemini_text(text: str) -> dict:
     # Fall back to plain text parsing
     lines = text.split('\n')
     for line in lines:
-        line_lower = line.lower()
+        if ':' not in line:
+            continue
+        parts = line.split(':', 1)
+        key_lower = parts[0].lower()
+        val_str = parts[1].strip()
         
-        if 'address' in line_lower and ':' in line:
-            parts = line.split(':', 1)
-            if len(parts) > 1:
-                out["Address"] = parts[1].strip()
-        elif 'units' in line_lower and ':' in line:
-            parts = line.split(':', 1)
-            if len(parts) > 1:
-                try:
-                    out["Units"] = int(''.join(filter(str.isdigit, parts[1])))
-                except:
-                    out["Units"] = 1
-        elif 'price' in line_lower and ':' in line:
-            parts = line.split(':', 1)
-            if len(parts) > 1:
-                price_str = parts[1].replace('$', '').replace(',', '').strip()
-                try:
-                    out["Price"] = float(price_str)
-                except:
-                    pass
-        elif 'rent' in line_lower and ':' in line:
-            parts = line.split(':', 1)
-            if len(parts) > 1:
-                rent_str = parts[1].replace('$', '').replace(',', '').strip()
-                try:
-                    out["Rent"] = float(rent_str)
-                except:
-                    pass
-        elif 'status' in line_lower and ':' in line:
-            parts = line.split(':', 1)
-            if len(parts) > 1:
-                out["Status"] = parts[1].strip()
-        elif 'positives' in line_lower and ':' in line:
-            parts = line.split(':', 1)
-            if len(parts) > 1:
-                out["Positives"] = parts[1].strip()
-        elif 'negatives' in line_lower and ':' in line:
-            parts = line.split(':', 1)
-            if len(parts) > 1:
-                out["Negatives"] = parts[1].strip()
+        if 'address' in key_lower:
+            out["Address"] = val_str
+        elif 'units' in key_lower:
+            try:
+                out["Units"] = int(''.join(filter(str.isdigit, val_str)))
+            except:
+                out["Units"] = 1
+        elif 'price' in key_lower:
+            price_str = val_str.replace('$', '').replace(',', '').strip()
+            try:
+                out["Price"] = float(price_str)
+            except:
+                pass
+        elif 'rent' in key_lower:
+            rent_str = val_str.replace('$', '').replace(',', '').strip()
+            try:
+                out["Rent"] = float(rent_str)
+            except:
+                pass
+        elif 'status' in key_lower:
+            out["Status"] = val_str
+        elif 'positives' in key_lower:
+            out["Positives"] = val_str
+        elif 'negatives' in key_lower:
+            out["Negatives"] = val_str
 
     return out
 
@@ -183,7 +197,7 @@ def save_persisted_properties(props, auto_commit=False, gh_owner=None, gh_repo=N
         try:
             token = st.secrets.get("GITHUB_PAT")
         except Exception:
-            token = None
+            pass
         if not token:
             token = os.environ.get("GITHUB_PAT")
         if token and gh_owner and gh_repo:
@@ -276,7 +290,7 @@ if show_debug and gemini_text and gemini_text.strip():
     st.sidebar.markdown("**Raw parsed output:**")
     st.sidebar.json(parsed_data)
 
-# Initialize Session State Data if it doesn't exist
+# Initialize Session State Data safely
 if 'properties' not in st.session_state:
     st.session_state.properties = [
         {"Address": "6-Family Hartford", "Units": 6, "Price": 830000, "Rent": 7200, "Status": "Underwriting", "Positives": "Max scale with 5 income streams, Commercial financing eligibility, High upside", "Negatives": "Older building, Multi-unit complexity", "Favorite": False},
@@ -302,6 +316,7 @@ if submit and address:
     st.session_state.properties = [p for p in st.session_state.properties if p["Address"] != address]
     st.session_state.properties.append(new_prop)
     save_persisted_properties(st.session_state.properties, auto_commit=auto_commit, gh_owner=gh_owner, gh_repo=gh_repo)
+    st.rerun()
 
 if import_clicked and gemini_text and gemini_text.strip():
     st.session_state['gemini_parsed'] = parse_gemini_text(gemini_text)
@@ -336,14 +351,14 @@ if parsed:
 processed_deals = []
 for p in st.session_state.properties:
     try:
-        units = int(p.get("Units", 1) or 1)
-        price = float(p.get("Price", 0) or 0)
+        u_count = int(p.get("Units", 1) or 1)
+        p_price = float(p.get("Price", 0) or 0)
         rent_total = float(p.get("Rent", 0) or 0)
     except (ValueError, TypeError):
-        units, price, rent_total = 1, 0.0, 0.0
+        u_count, p_price, rent_total = 1, 0.0, 0.0
 
     # Mortgage Calculation
-    loan_amount = price * (1 - down_payment_pct)
+    loan_amount = p_price * (1 - down_payment_pct)
     term_years = 30
     n = term_years * 12
     monthly_rate = interest_rate / 12 if interest_rate > 0 else 0
@@ -357,16 +372,16 @@ for p in st.session_state.properties:
     monthly_noi = rent_total - total_operating_expenses
 
     # House-hack adjustment (living in one unit)
-    user_rent_share = rent_total / units if units > 0 else 0
+    user_rent_share = rent_total / u_count if u_count > 0 else 0
     remaining_rent = rent_total - user_rent_share
     
-    # House-hack Cash Flow = Cash incoming from other units minus 100% of P&I and whole building OPEX
+    # House-hack Cash Flow
     house_hack_cash_flow = remaining_rent - total_operating_expenses - mortgage
 
     annual_noi = monthly_noi * 12
-    cap_rate = (annual_noi / price) if price > 0 else 0
+    cap_rate = (annual_noi / p_price) if p_price > 0 else 0
     annual_cash_flow = house_hack_cash_flow * 12
-    down_payment_amount = price * down_payment_pct if price > 0 else 0
+    down_payment_amount = p_price * down_payment_pct if p_price > 0 else 0
     cash_on_cash = (annual_cash_flow / down_payment_amount) if down_payment_amount > 0 else None
 
     processed_deals.append({
@@ -403,14 +418,13 @@ st.markdown("---")
 # 4. MASTER DEAL PIPELINE TABLE
 st.subheader("📊 Master Pipeline Overview")
 
-# Metric definitions container for clarity before reading the large data table
 with st.expander("📘 Financial Field Guide: What do these column metrics mean?", expanded=False):
     st.markdown("""
-    *   **Est. Mortgage:** The monthly Principal & Interest (P&I) payment based on your global settings. It does not include local property taxes or insurance, which vary per deal.
-    *   **NOI (Net Operating Income):** Total building revenue minus operating expenses (maintenance, water, insurance, vacancies). *Crucial because it shows how profitable the asset is on its own before any loan or debt is factored in.*
-    *   **Cap Rate (Capitalization Rate):** Annual NOI divided by purchase price. It acts as an unleveraged rate of return to help you evaluate if the price is fair compared to the area's baseline risk.
-    *   **Net Cash Flow:** Your monthly take-home money *while house-hacking*. This represents cash incoming from the remaining tenant units minus the entire building's expenses and mortgage payment while you occupy 1 unit.
-    *   **Cash on Cash (CoC):** Your annual net cash flow divided by your initial cash out of pocket (down payment amount). It tells you the exact cash return rate your physical cash is yielding.
+    * **Est. Mortgage:** The monthly Principal & Interest (P&I) payment based on your global settings. It does not include local property taxes or insurance, which vary per deal.
+    * **NOI (Net Operating Income):** Total building revenue minus operating expenses (maintenance, water, insurance, vacancies). *Crucial because it shows how profitable the asset is on its own before any loan or debt is factored in.*
+    * **Cap Rate (Capitalization Rate):** Annual NOI divided by purchase price. It acts as an unleveraged rate of return to help you evaluate if the price is fair compared to the area's baseline risk.
+    * **Net Cash Flow:** Your monthly take-home money *while house-hacking*. This represents cash incoming from the remaining tenant units minus the entire building's expenses and mortgage payment while you occupy 1 unit.
+    * **Cash on Cash (CoC):** Your annual net cash flow divided by your initial cash out of pocket (down payment amount). It tells you the exact cash return rate your physical cash is yielding.
     """)
 
 display_cols = ["Address", "Units", "Price", "Rent", "Status", "Est. Mortgage", "Monthly NOI", "Annual NOI", "Cap Rate", "Net Cash Flow", "Annual Cash Flow", "Cash on Cash", "Favorite"]
@@ -444,7 +458,8 @@ if not df.empty:
 
     # Copy Field
     st.markdown("**Quick Copy Address**")
-    copy_choice = st.selectbox("Choose address to copy", display_df['Address'].tolist())
+    addresses_list = display_df['Address'].tolist()
+    copy_choice = st.selectbox("Choose address to copy", addresses_list)
     if st.button("Copy address to field"):
         st.session_state['copied_address'] = copy_choice
     st.text_input("Address (copy from here)", value=st.session_state.get('copied_address', ''), key="copy_field")
@@ -452,8 +467,7 @@ if not df.empty:
     # Side by side comparison
     st.markdown("---")
     st.subheader("⚖️ Compare Listings")
-    addresses = df['Address'].tolist()
-    selected_for_compare = st.multiselect("Select listings to compare (max 4)", addresses, max_selections=4)
+    selected_for_compare = st.multiselect("Select listings to compare (max 4)", addresses_list, max_selections=4)
     if selected_for_compare:
         to_compare = compare_df[compare_df['Address'].isin(selected_for_compare)].set_index('Address')
         st.write(to_compare[['Units','Price','Rent','Est. Mortgage','Monthly NOI','Annual NOI','Cap Rate','Net Cash Flow','Annual Cash Flow','Cash on Cash']].transpose())
@@ -461,7 +475,7 @@ if not df.empty:
     # Delete listings
     st.markdown("---")
     st.subheader("🗑️ Manage & Delete Listings")
-    selected_for_delete = st.multiselect("Select listings to delete", addresses)
+    selected_for_delete = st.multiselect("Select listings to delete", addresses_list)
     if st.button("Delete selected listings", key="delete_selected"):
         if selected_for_delete:
             st.session_state.properties = [p for p in st.session_state.properties if p['Address'] not in selected_for_delete]
@@ -470,7 +484,7 @@ if not df.empty:
             st.rerun()
 else:
     st.info("No properties currently tracked in the pipeline.")
-    addresses = []
+    addresses_list = []
 
 if st.button("Clear all listings", key="clear_all_confirm"):
     st.session_state.properties = []
@@ -481,7 +495,7 @@ if st.button("Clear all listings", key="clear_all_confirm"):
 # 5. DYNAMIC PROPERTY CARD DEEP-DIVES
 st.markdown("---")
 st.subheader("🔎 Deep-Dive Property Vetting")
-selected_address = st.selectbox("Select a property to view detailed pros/cons:", addresses)
+selected_address = st.selectbox("Select a property to view detailed pros/cons:", addresses_list)
 
 if selected_address and not df.empty:
     deal = df[df['Address'] == selected_address].iloc[0]
@@ -500,7 +514,6 @@ if selected_address and not df.empty:
     m_col3.metric("Cap Rate", f"{deal['Cap Rate']*100:.2f}%" if pd.notna(deal['Cap Rate']) else "-")
     m_col3.metric("Annual Cash Flow", fmt_currency(deal['Annual Cash Flow']))
 
-    # Direct inline contextual card insight blocks explaining metric relationships
     st.info(f"💡 **Deep Dive Analysis Rules for {deal['Address']}:** "
             f"The property's annual operational margin (**NOI**) is **{fmt_currency(deal['Annual NOI'])}**. This is what shields you from financial losses. "
             f"With a **Cap Rate** of **{deal['Cap Rate']*100:.2f}%**, you can quickly judge if the return profile fits your targets compared to baseline risk profiles in Hartford.")
