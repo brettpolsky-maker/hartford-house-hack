@@ -21,10 +21,128 @@ st.markdown("#### 🛡️ 🧙‍♂️ 💪 💀 👊  — mix of power, mystic
 
 # ---------- Helper: Gemini text parser ----------
 def parse_gemini_text(text: str) -> dict:
-    """Parse Gemini content - handles both JSON and plain text formats securely."""
+    """
+    Highly robust parser designed to extract property mechanics from Gemini payloads.
+    Handles formal JSON, markdown-wrapped JSON, and sloppy plain-text/conversational readouts.
+    """
     out = {"Address": "", "Units": 1, "Price": 0.0, "Rent": 0.0, "Status": "Monitoring", "Positives": "", "Negatives": ""}
     if not text:
         return out
+
+    # 1. TRY JSON PARSING FIRST (Clean wrappers if present)
+    cleaned_text = text.strip()
+    if cleaned_text.startswith("```json"):
+        cleaned_text = cleaned_text[7:]
+    if cleaned_text.endswith("```"):
+        cleaned_text = cleaned_text[:-3]
+    cleaned_text = cleaned_text.strip()
+
+    try:
+        # Look for JSON structure even if embedded inside conversational text
+        json_match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group(0))
+            
+            # Extract Address
+            addr_parts = [data.get(k) for k in ["address", "city", "state"] if data.get(k)]
+            if addr_parts:
+                out["Address"] = ", ".join(addr_parts)
+            elif data.get("formatted_address"):
+                out["Address"] = data["formatted_address"]
+            
+            # Extract Units
+            if "totalUnits" in data:
+                out["Units"] = int(data["totalUnits"])
+            elif "units" in data:
+                if isinstance(data["units"], list):
+                    out["Units"] = len(data["units"])
+                    total_rent = sum(u.get("estRent", u.get("rent", 0)) for u in data["units"] if isinstance(u, dict))
+                    if total_rent: out["Rent"] = float(total_rent)
+                elif str(data["units"]).isdigit():
+                    out["Units"] = int(data["units"])
+
+            # Extract Rent overrides
+            if data.get("grossRent"): out["Rent"] = float(data["grossRent"])
+            elif data.get("rent") and not isinstance(data.get("rent"), list): out["Rent"] = float(data["rent"])
+
+            # Extract Price
+            if data.get("listingPrice"): out["Price"] = float(data["listingPrice"])
+            elif data.get("price"): out["Price"] = float(data["price"])
+            elif "financials" in data and isinstance(data["financials"], dict):
+                out["Price"] = float(data["financials"].get("listPrice", data["financials"].get("price", 0)))
+
+            # Extract Status, Pros, Cons
+            if data.get("status"): out["Status"] = data["status"]
+            
+            for key, out_key in [("positives", "Positives"), ("negatives", "Negatives")]:
+                val = data.get(key) or data.get("analysis", {}).get(key, "")
+                out[out_key] = ", ".join(str(x) for x in val) if isinstance(val, list) else str(val)
+            
+            # If we successfully parsed valid JSON data, return it immediately
+            if out["Address"] or out["Price"] > 0:
+                return out
+    except Exception:
+        pass # Fallback to flexible Regex processing if JSON approach fails
+
+    # 2. AGGRESSIVE REGEX FALLBACK (For conversational text/markdown lists)
+    text_lower = text.lower()
+    lines = text.split('\n')
+
+    # Find Price (Looking for numbers near $, "price", "asking", or "list")
+    price_match = re.search(r'(?:price|asking|list|\$)\s*(?::|is)?\s*\$?\s*([0-9,]{4,})', text_lower)
+    if price_match:
+        out["Price"] = float(price_match.group(1).replace(',', ''))
+
+    # Find Rent (Looking for numbers near "rent", "gross", or "monthly")
+    rent_match = re.search(r'(?:rent|gross|monthly|\$)\s*(?::|is)?\s*\$?\s*([0-9,]{3,4})\b', text_lower)
+    if rent_match:
+        out["Rent"] = float(rent_match.group(1).replace(',', ''))
+
+    # Find Units (Looking for digits near "units", "family", "plex")
+    units_match = re.search(r'([1-9]|10)\s*(?:unit|family|plex|door)', text_lower)
+    if units_match:
+        out["Units"] = int(units_match.group(1))
+    else:
+        # Alternative pattern: "units: 3"
+        units_match_alt = re.search(r'units\s*:\s*([1-9])', text_lower)
+        if units_match_alt:
+            out["Units"] = int(units_match_alt.group(1))
+
+    # Parse line by line for structured items like Address, Pros, Cons
+    pos_lines = []
+    neg_lines = []
+    
+    for line in lines:
+        cleaned_line = line.strip()
+        if not cleaned_line: continue
+        
+        # Address extraction
+        if any(k in cleaned_line.lower() for k in ["address:", "prop:"]):
+            out["Address"] = cleaned_line.split(':', 1)[1].strip()
+        elif re.search(r'^\d+\s+[A-Za-z0-9\s.,]+(?:st|ave|pl|rd|ln|dr|ct|hartford)', cleaned_line.lower()):
+            # Detects a raw address string starting with numbers (e.g. "40 Allen Place")
+            if not out["Address"]:
+                out["Address"] = cleaned_line.lstrip('-*• ').strip()
+
+        # Capture list items for pros/cons if they are split into bullet points
+        if cleaned_line.startswith(('-', '*', '•')):
+            item = cleaned_line.lstrip('-*• ').strip()
+            # Contextual sorting based on keywords
+            if any(w in item.lower() for w in ["good", "pro", "positive", "upside", "benefit", "turnkey", "low risk"]):
+                pos_lines.append(item)
+            elif any(w in item.lower() for w in ["bad", "con", "negative", "risk", "downside", "older", "softening"]):
+                neg_lines.append(item)
+
+    if pos_lines: out["Positives"] = ", ".join(pos_lines)
+    if neg_lines: out["Negatives"] = ", ".join(neg_lines)
+
+    # Clean up standard status if found
+    for s in ["Monitoring", "Screened", "Underwriting", "Offer Made", "Dead Deal"]:
+        if s.lower() in text_lower:
+            out["Status"] = s
+            break
+
+    return out
 
     # Clean markdown wrapper blocks if present
     cleaned_text = text.strip()
