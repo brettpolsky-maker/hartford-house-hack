@@ -21,12 +21,47 @@ st.markdown("#### 🛡️ 🧙‍♂️ 💪 💀 👊  — mix of power, mystic
 
 # ---------- Helper: Gemini text parser ----------
 def parse_gemini_text(text: str) -> dict:
-    """
-    Highly robust parser designed to extract property mechanics from Gemini payloads.
-    Handles formal JSON, markdown-wrapped JSON, and sloppy plain-text/conversational readouts.
-    """
-    out = {"Address": "", "Units": 1, "Price": 0.0, "Rent": 0.0, "Status": "Monitoring", "Positives": "", "Negatives": ""}
-    if not text:
+    """Updated parser tuned for your specific nested JSON schema."""
+    out = {"Address": "Unknown Address", "Units": 1, "Price": 0.0, "Rent": 0.0, "Status": "Monitoring", "Positives": "", "Negatives": ""}
+    
+    # Clean the input
+    cleaned_text = text.strip()
+    if "```" in cleaned_text:
+        cleaned_text = re.sub(r'```json|```', '', cleaned_text).strip()
+
+    try:
+        data = json.loads(cleaned_text)
+        
+        # 1. Address: Look inside property_identifiers
+        ident = data.get("property_identifiers", {})
+        addr = ident.get("address", "")
+        city = ident.get("city", "")
+        if addr:
+            out["Address"] = f"{addr.title()}, {city.title()}"
+        
+        # 2. Units: Look inside technical_specifications
+        tech = data.get("technical_specifications", {})
+        out["Units"] = int(tech.get("total_units", 1))
+        
+        # 3. Price: Look inside financial_metrics
+        fin = data.get("financial_metrics", {})
+        out["Price"] = float(fin.get("listing_price", 0))
+        
+        # 4. Rent: Look inside financial_metrics
+        out["Rent"] = float(fin.get("gross_potential_monthly_income", 0))
+        
+        # 5. Positives/Negatives: Look inside risk_assessment
+        risk = data.get("risk_assessment", {})
+        pos = risk.get("positives", [])
+        neg = risk.get("negatives", [])
+        
+        out["Positives"] = ", ".join(pos) if isinstance(pos, list) else str(pos)
+        out["Negatives"] = ", ".join(neg) if isinstance(neg, list) else str(neg)
+        
+        return out
+
+    except Exception as e:
+        st.sidebar.error(f"JSON Parse Error: {e}")
         return out
 
     # 1. TRY JSON PARSING FIRST (Clean wrappers if present)
